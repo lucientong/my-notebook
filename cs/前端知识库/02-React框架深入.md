@@ -1,4 +1,4 @@
-# React框架深入 - 从原理到实战（完整版）
+# React框架深入 - 从原理到实战
 
 ---
 
@@ -24,11 +24,11 @@
 11. [React设计哲学](#11-react设计哲学)
 12. [性能优化进阶](#12-性能优化进阶)
 
-### 第五部分：实战、微前端与面试
+### 第五部分：实战、微前端与自查
 13. [高级模式与技巧](#13-高级模式与技巧)
-14. [源码级面试题](#14-源码级面试题)
+14. [面试题自查](#14-面试题自查)
 15. [企业级实战案例](#15-企业级实战案例)
-16. [React与微前端架构](#16-react与微前端架构) ⭐NEW⭐
+16. [React与微前端架构](#16-react与微前端架构)
     - 什么是微前端
     - React微前端解决方案（qiankun/Module Federation/iframe）
     - 微前端核心问题（样式隔离、JS沙箱、通信、路由）
@@ -4320,7 +4320,7 @@ function App() {
 
 ---
 
-## 14. 源码级面试题
+## 14. 面试题自查
 
 ### Q1：为什么不能在条件语句中使用Hooks？
 
@@ -4455,6 +4455,464 @@ useLayoutEffect(() => {
   element.style.height = `${element.scrollHeight}px`;
   // 用户看不到中间状态（高度为0 → 高度为scrollHeight）
 }, []);
+```
+
+### Q6：虚拟DOM的优缺点是什么？
+
+**答案**：
+
+```
+优点：
+1. 跨平台：虚拟DOM是JS对象，可以渲染到不同平台（React Native、SSR）
+2. 批量更新：收集变化后一次性更新DOM，减少重排重绘
+3. 声明式编程：开发者只关心状态，框架处理DOM操作
+4. 简化开发：不需要手动操作DOM，降低心智负担
+
+缺点：
+1. 首次渲染更慢：需要先创建虚拟DOM，再创建真实DOM
+2. 内存占用：虚拟DOM树需要额外内存
+3. Diff算法有开销：每次更新都要进行Diff计算
+4. 简单场景可能更慢：直接操作DOM可能更快（如单个节点更新）
+
+// 虚拟DOM结构示例
+{
+  type: 'div',
+  props: {
+    className: 'app',
+    children: [
+      { type: 'h1', props: { children: '标题' } },
+      { type: 'p', props: { children: '内容' } }
+    ]
+  }
+}
+```
+
+### Q7：React的合成事件机制是什么？
+
+**答案**：
+
+```javascript
+// React的合成事件特点：
+// 1. 事件委托：事件统一绑定到root节点（React 17+）
+// 2. 事件池：复用事件对象（React 17已移除）
+// 3. 跨浏览器兼容：统一不同浏览器的事件行为
+
+// 事件绑定位置（React 17+）
+document.getElementById('root').addEventListener('click', handler);
+// 不是绑定在具体DOM元素上
+
+// 与原生事件的执行顺序
+useEffect(() => {
+  document.addEventListener('click', () => {
+    console.log('原生事件');  // 1. 先执行（捕获/冒泡）
+  });
+}, []);
+
+return (
+  <div onClick={() => console.log('合成事件')}>  // 2. 后执行
+    点击
+  </div>
+);
+
+// 阻止冒泡
+// e.stopPropagation(): 阻止合成事件冒泡
+// e.nativeEvent.stopImmediatePropagation(): 阻止原生事件
+```
+
+### Q8：Context的性能问题及优化方案？
+
+**答案**：
+
+```jsx
+// 问题：Context值变化会导致所有Consumer重新渲染
+const ThemeContext = createContext({ theme: 'light', user: null });
+
+function App() {
+  const [theme, setTheme] = useState('light');
+  const [user, setUser] = useState(null);
+  
+  // ❌ 每次render都创建新对象，导致Consumer重新渲染
+  return (
+    <ThemeContext.Provider value={{ theme, user }}>
+      <Child />
+    </ThemeContext.Provider>
+  );
+}
+
+// 优化方案1：拆分Context
+const ThemeContext = createContext('light');
+const UserContext = createContext(null);
+
+// 优化方案2：useMemo缓存value
+function App() {
+  const [theme, setTheme] = useState('light');
+  const [user, setUser] = useState(null);
+  
+  const value = useMemo(() => ({ theme, user }), [theme, user]);
+  
+  return (
+    <ThemeContext.Provider value={value}>
+      <Child />
+    </ThemeContext.Provider>
+  );
+}
+
+// 优化方案3：组件内部使用memo
+const Child = memo(function Child() {
+  const { theme } = useContext(ThemeContext);
+  return <div className={theme}>...</div>;
+});
+```
+
+### Q9：useMemo和useCallback的区别与使用场景？
+
+**答案**：
+
+```jsx
+// useMemo: 缓存计算结果（值）
+const expensiveValue = useMemo(() => {
+  return computeExpensiveValue(a, b);
+}, [a, b]);
+
+// useCallback: 缓存函数引用
+const handleClick = useCallback(() => {
+  doSomething(a);
+}, [a]);
+
+// useCallback是useMemo的语法糖
+useCallback(fn, deps) === useMemo(() => fn, deps);
+
+// 使用场景：
+// 1. useMemo：计算开销大的值、作为其他Hook依赖
+const sortedList = useMemo(() => {
+  return [...list].sort((a, b) => a - b);  // 避免每次render都排序
+}, [list]);
+
+// 2. useCallback：传递给memo子组件的回调函数
+const MemoChild = memo(function Child({ onClick }) {
+  return <button onClick={onClick}>Click</button>;
+});
+
+function Parent() {
+  const handleClick = useCallback(() => {
+    console.log('clicked');
+  }, []);  // 引用稳定，MemoChild不会重新渲染
+  
+  return <MemoChild onClick={handleClick} />;
+}
+
+// 注意：不要过度使用，简单场景反而有性能开销
+```
+
+### Q10：React中key的作用及最佳实践？
+
+**答案**：
+
+```jsx
+// key的作用：帮助React识别哪些元素发生了变化
+// 用于Diff算法的Element Diff阶段
+
+// 1. 没有key或使用index作为key的问题
+// 列表：[A, B, C] → [B, A, C]（B移动到最前面）
+{items.map((item, index) => <li key={index}>{item}</li>)}
+// 结果：A、B、C的key都没变（都是0、1、2），React认为只是内容变了
+// 会更新所有元素的内容，而不是移动元素
+
+// 2. 使用稳定的唯一ID
+{items.map(item => <li key={item.id}>{item.name}</li>)}
+// 结果：React能正确识别B移动了，只需要移动DOM
+
+// 最佳实践：
+// ✅ 使用数据的唯一ID（如数据库ID）
+// ✅ 使用稳定的唯一标识符（如UUID）
+// ❌ 不要使用Math.random()作为key
+// ❌ 避免使用index作为key（除非列表是静态的、不会排序/过滤）
+
+// 特殊情况：强制组件重新挂载
+<Child key={userId} />  // userId变化时，Child会卸载再挂载
+```
+
+### Q11：React的错误边界（Error Boundary）如何使用？
+
+**答案**：
+
+```jsx
+// 错误边界只能用类组件实现
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  
+  // 静态方法：渲染备用UI
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  
+  // 实例方法：记录错误信息
+  componentDidCatch(error, errorInfo) {
+    console.log('Error:', error);
+    console.log('Error Info:', errorInfo.componentStack);
+    // 上报错误到监控系统
+    logErrorToService(error, errorInfo);
+  }
+  
+  render() {
+    if (this.state.hasError) {
+      return <div>出错了：{this.state.error.message}</div>;
+    }
+    return this.props.children;
+  }
+}
+
+// 使用
+<ErrorBoundary>
+  <MyComponent />
+</ErrorBoundary>
+
+// 注意：错误边界无法捕获以下错误：
+// 1. 事件处理函数中的错误（使用try-catch）
+// 2. 异步代码（setTimeout、Promise）
+// 3. 服务端渲染
+// 4. 错误边界自身的错误
+```
+
+### Q12：React 18的新特性有哪些？
+
+**答案**：
+
+```jsx
+// 1. 自动批处理（Automatic Batching）
+// 所有更新都会自动批处理，不只是事件处理函数中
+setTimeout(() => {
+  setCount(c => c + 1);
+  setName('React 18');
+  // React 18: 一次更新
+  // React 17: 两次更新
+}, 0);
+
+// 2. Concurrent Features（并发特性）
+// startTransition: 标记非紧急更新
+import { startTransition } from 'react';
+startTransition(() => {
+  setSearchResults(results);  // 可被打断
+});
+
+// useTransition: 带pending状态
+const [isPending, startTransition] = useTransition();
+
+// useDeferredValue: 延迟更新
+const deferredValue = useDeferredValue(value);
+
+// 3. Suspense支持SSR
+<Suspense fallback={<Loading />}>
+  <SomeComponent />  // 支持服务端渲染
+</Suspense>
+
+// 4. useId: 生成稳定的唯一ID（支持SSR）
+const id = useId();  // 客户端和服务端一致
+
+// 5. useSyncExternalStore: 订阅外部数据源
+const state = useSyncExternalStore(subscribe, getSnapshot);
+
+// 6. 新的根API
+import { createRoot } from 'react-dom/client';
+const root = createRoot(document.getElementById('root'));
+root.render(<App />);
+```
+
+### Q13：如何实现一个简单的useState？
+
+**答案**：
+
+```javascript
+// 简化版useState实现
+let state;
+let stateIndex = 0;
+const stateArray = [];
+
+function useState(initialValue) {
+  const currentIndex = stateIndex;
+  
+  // 首次渲染使用初始值，后续使用保存的值
+  if (stateArray[currentIndex] === undefined) {
+    stateArray[currentIndex] = 
+      typeof initialValue === 'function' ? initialValue() : initialValue;
+  }
+  
+  const setState = (newValue) => {
+    // 支持函数式更新
+    if (typeof newValue === 'function') {
+      stateArray[currentIndex] = newValue(stateArray[currentIndex]);
+    } else {
+      stateArray[currentIndex] = newValue;
+    }
+    // 触发重新渲染
+    render();
+  };
+  
+  stateIndex++;
+  return [stateArray[currentIndex], setState];
+}
+
+function render() {
+  stateIndex = 0;  // 重置索引
+  ReactDOM.render(<App />, document.getElementById('root'));
+}
+
+// 使用示例
+function App() {
+  const [count, setCount] = useState(0);
+  const [name, setName] = useState('React');
+  
+  return (
+    <div>
+      <p>{count} - {name}</p>
+      <button onClick={() => setCount(count + 1)}>+1</button>
+    </div>
+  );
+}
+```
+
+### Q14：React的渲染流程（Render和Commit阶段）？
+
+**答案**：
+
+```
+React的渲染分为两个阶段：
+
+1. Render阶段（可中断）
+   ├── 触发更新（setState/forceUpdate/props变化）
+   ├── 调度更新（Scheduler）
+   ├── 构建Fiber树（workLoop）
+   │   ├── beginWork：向下遍历，创建子Fiber
+   │   └── completeWork：向上回溯，创建DOM
+   └── 收集副作用（effectList）
+
+2. Commit阶段（不可中断）
+   ├── Before Mutation
+   │   └── 执行getSnapshotBeforeUpdate
+   ├── Mutation
+   │   ├── 插入DOM（Placement）
+   │   ├── 更新DOM（Update）
+   │   └── 删除DOM（Deletion）
+   └── Layout
+       ├── 执行componentDidMount/componentDidUpdate
+       ├── 执行useLayoutEffect
+       └── 调度useEffect（异步）
+
+为什么Render阶段可中断？
+- Fiber架构的链表结构支持中断和恢复
+- 时间切片（每5ms检查是否需要yield）
+- 优先级调度（高优先级任务可以打断低优先级）
+
+为什么Commit阶段不可中断？
+- DOM操作需要原子性，避免中间状态
+- 保证UI一致性
+```
+
+### Q15：受控组件和非受控组件的区别？
+
+**答案**：
+
+```jsx
+// 受控组件：值由React state控制
+function ControlledInput() {
+  const [value, setValue] = useState('');
+  
+  return (
+    <input
+      value={value}  // React是唯一数据源
+      onChange={e => setValue(e.target.value)}
+    />
+  );
+}
+
+// 非受控组件：值由DOM控制
+function UncontrolledInput() {
+  const inputRef = useRef();
+  
+  const handleSubmit = () => {
+    console.log(inputRef.current.value);  // 从DOM读取
+  };
+  
+  return (
+    <input ref={inputRef} defaultValue="默认值" />
+  );
+}
+
+// 选择建议：
+// 受控组件：
+// - 需要实时验证
+// - 需要格式化输入
+// - 多个输入需要联动
+// - 需要禁用提交按钮
+
+// 非受控组件：
+// - 简单表单，只在提交时需要值
+// - 集成非React代码或第三方库
+// - 文件输入（<input type="file" />只能是非受控）
+// - 性能优化（避免每次输入都触发渲染）
+```
+
+### Q16：如何优化React长列表的渲染性能？
+
+**答案**：
+
+```jsx
+// 1. 虚拟列表：只渲染可见区域
+import { FixedSizeList } from 'react-window';
+
+function VirtualList({ items }) {
+  return (
+    <FixedSizeList
+      height={500}
+      itemCount={items.length}
+      itemSize={50}
+      width="100%"
+    >
+      {({ index, style }) => (
+        <div style={style}>{items[index].name}</div>
+      )}
+    </FixedSizeList>
+  );
+}
+
+// 2. 分页加载
+function PaginatedList() {
+  const [page, setPage] = useState(1);
+  const items = useFetch(`/api/items?page=${page}`);
+  
+  return (
+    <div>
+      {items.map(item => <Item key={item.id} data={item} />)}
+      <button onClick={() => setPage(p => p + 1)}>加载更多</button>
+    </div>
+  );
+}
+
+// 3. memo + 稳定的key
+const Item = memo(function Item({ data }) {
+  return <div>{data.name}</div>;
+});
+
+// 4. 使用useMemo缓存列表项
+const renderedItems = useMemo(() => {
+  return items.map(item => <Item key={item.id} data={item} />);
+}, [items]);
+
+// 5. 时间切片（并发模式）
+const [query, setQuery] = useState('');
+const [, startTransition] = useTransition();
+
+const handleChange = (e) => {
+  const value = e.target.value;
+  setQuery(value);  // 紧急：更新输入框
+  
+  startTransition(() => {
+    setFilteredList(filterList(value));  // 非紧急：过滤列表
+  });
+};
 ```
 
 ---

@@ -4,18 +4,22 @@
 
 ## 📑 目录
 
+### 语言与JVM
 - [Java核心特性](#java核心特性)
 - [泛型与类型擦除](#泛型与类型擦除)
 - [String与常量池](#string与常量池)
 - [JVM深入](#jvm深入)
+
+### 并发与框架
 - [Java内存模型](#java内存模型)
 - [并发编程](#并发编程)
 - [Spring框架](#spring框架)
 - [MyBatis实战](#mybatis实战)
 - [性能调优](#性能调优)
-- [常见面试题](#常见面试题)
+
+### 工程实践与自查
 - [实战案例](#实战案例)
-- [📝 面试题自查](#-面试题自查)
+- [面试题自查](#面试题自查)
 
 ---
 
@@ -1938,47 +1942,6 @@ spring.datasource.hikari.max-lifetime=1800000     # 连接最大存活时间（3
 
 ---
 
-## 常见面试题
-
-**1. HashMap 和 ConcurrentHashMap 的区别？**
-
-- `HashMap` 非线程安全，`ConcurrentHashMap` 线程安全
-- `ConcurrentHashMap` 使用 CAS + synchronized，并发度更高
-
----
-
-**2. synchronized 和 ReentrantLock 的区别？**
-
-- `synchronized` 简单，自动释放，`ReentrantLock` 需手动释放
-- `ReentrantLock` 支持可中断、公平锁、多个条件变量
-
----
-
-**3. Spring Bean 的作用域？**
-
-- `singleton`：单例（默认）
-- `prototype`：每次请求创建新实例
-- `request`：每个 HTTP 请求一个实例
-- `session`：每个 Session 一个实例
-
----
-
-**4. Spring 如何解决循环依赖？**
-
-- **三级缓存**：
-  - 一级缓存：完整的 Bean
-  - 二级缓存：早期的 Bean（未初始化完成）
-  - 三级缓存：Bean 工厂
-- 构造器循环依赖无法解决（抛出异常）
-
----
-
-**5. MyBatis 的一级缓存和二级缓存？**
-
-- **一级缓存**：SqlSession 级别，默认开启
-- **二级缓存**：Mapper 级别，需手动开启
-
----
 
 ## 实战案例
 
@@ -2087,13 +2050,11 @@ Java 面试重点：
 - **并发编程**：synchronized、Lock、线程池、CompletableFuture
 - **Spring**：IoC、AOP、事务管理
 - **MyBatis**：映射、动态 SQL、性能优化
-- **实战经验**：结合金融/游戏场景，展示你的工程能力
-
-面试官最看重：**你是否理解底层原理，能否解决实际问题**。💪
+- **实战经验**：结合金融/游戏场景的工程能力
 
 ---
 
-## 📝 面试题自查
+## 面试题自查
 
 ### Q1：Java 泛型的类型擦除是什么？它带来了哪些限制？
 

@@ -4,12 +4,15 @@
 
 ## 📑 目录
 
+### 命令与排障SOP
 1. [常用命令速查](#1-常用命令速查)
 2. [CPU飙高排查SOP](#2-cpu飙高排查sop)
 3. [内存问题排查SOP](#3-内存问题排查sop)
 4. [网络问题排查SOP](#4-网络问题排查sop)
 5. [磁盘I/O排查SOP](#5-磁盘io排查sop)
-6. [常见面试题](#6-常见面试题)
+
+### 实战与自查
+6. [面试题自查](#6-面试题自查)
 7. [实战案例](#7-实战案例)
 
 ---
@@ -107,7 +110,7 @@ dmesg -T          # 带时间戳
 journalctl -xe    # systemd日志
 ```
 
-> 💡 **本文定位**：排障SOP流程 + 底层原理深度剖析。各工具的完整用法手册（ethtool网卡诊断、smartctl硬盘检查、perf火焰图、sar历史数据、iostat阈值判断等）请参考 [IaaS基础设施技术 Part 5](../专项知识库/06-IaaS基础设施技术.md)。
+> 💡 **本文定位**：排障SOP流程 + 底层原理深度剖析。各工具的完整用法手册（ethtool网卡诊断、smartctl硬盘检查、perf火焰图、sar历史数据、iostat阈值判断等）请参考 《专项知识库/06-IaaS基础设施技术》Part 5。
 
 ---
 
@@ -436,67 +439,260 @@ lsof -p <pid> | grep -E "REG|DIR"
 
 ---
 
-## 6. 常见面试题
+## 6. 面试题自查
 
-### Q1: 如何定位CPU 100%？
-
-**答案（完整SOP）**：
-1. `top` 找到CPU最高的进程
-2. `top -Hp <pid>` 找到CPU最高的线程
-3. 将线程TID转为16进制：`printf "%x\n" <tid>`
-4. 查看线程堆栈：`jstack <pid> | grep -A 50 <hex_tid>`
-5. 分析代码：定位死循环/频繁GC/锁竞争
-
-### Q2: Load Average 3个数字什么意思？
+### Q1: 如何定位CPU 100%？完整SOP是什么？
 
 **答案**：
-- 1分钟、5分钟、15分钟的平均负载
-- 数值含义：等待CPU的进程数 + 正在运行的进程数
-- 判断标准：
+1. `top` 查看整体CPU，找到CPU最高的进程PID
+2. `top -Hp <pid>` 找到进程内CPU最高的线程TID
+3. 将TID转为16进制：`printf "%x\n" <tid>`
+4. 查看线程堆栈：
+   - Go：`curl http://localhost:6060/debug/pprof/goroutine?debug=2`
+   - Java：`jstack <pid> | grep -A 50 <hex_tid>`
+5. 分析代码定位根因：死循环/频繁GC/锁竞争
+
+### Q2: Load Average 3个数字什么意思？如何判断系统负载是否正常？
+
+**答案**：
+- **含义**：1分钟、5分钟、15分钟的平均负载
+- **计算公式**：正在运行的进程(R) + 不可中断睡眠的进程(D)
+- **判断标准**：
   - 小于CPU核心数：正常
   - 等于CPU核心数：满载
   - 大于CPU核心数：过载
 
-**示例**：
-```bash
-uptime
-# load average: 2.5, 1.8, 1.2
-# 如果是4核CPU，2.5/4 = 62.5%负载，正常
-```
+**示例**：4核CPU，load average: 2.5, 1.8, 1.2 → 2.5/4=62.5%负载，正常
 
-### Q3: 如何定位内存泄漏？
+### Q3: 为什么Load Average高但CPU使用率低？
 
 **答案**：
+Load Average包含**D状态进程**（等待I/O）。
+
+**常见场景**：
+- 磁盘I/O慢：大量进程等待磁盘读写
+- NFS挂载故障：进程卡在NFS请求
+- 硬件故障：设备响应超时
+
+**排查命令**：
+```bash
+ps aux | awk '{if($8=="D") print $0}'  # 查看D状态进程
+cat /proc/<pid>/stack                   # 查看进程卡在哪里
+```
+
+### Q4: 如何定位内存泄漏？Go程序和Java程序有什么不同？
+
+**答案**：
+
+**通用流程**：
 1. `free -h` 确认内存持续增长
-2. `ps aux` 找到内存占用最高的进程
-3. `pprof/jmap` dump内存
-4. 分析哪些对象占用最多
-5. 检查代码是否有未释放的引用
+2. `ps aux --sort=-rss | head` 找到内存最高的进程
+3. dump内存并分析
 
-### Q4: TIME_WAIT过多怎么办？
-
-**答案**：
-- **原因**：短连接过多，主动关闭方积累
-- **解决**：
-  - 改用长连接（HTTP Keep-Alive）
-  - 调整内核参数（tcp_tw_reuse）
-  - 增加端口范围（ip_local_port_range）
-
-### Q5: 如何查看进程打开了哪些文件？
-
-**答案**：
+**Go程序**：
 ```bash
-lsof -p <pid>
-ls -l /proc/<pid>/fd
+curl http://localhost:6060/debug/pprof/heap > heap.prof
+go tool pprof heap.prof
+(pprof) top  # 查看内存占用
 ```
+
+**Java程序**：
+```bash
+jmap -histo <pid> | head -20  # 对象统计
+jmap -dump:format=b,file=heap.hprof <pid>  # dump堆
+# 用MAT分析hprof文件
+```
+
+### Q5: TIME_WAIT过多怎么办？为什么会出现？
+
+**答案**：
+
+**原因**：主动关闭连接的一方进入TIME_WAIT，等待2MSL
+
+**解决方案**：
+1. **改用长连接**：HTTP Keep-Alive，连接池
+2. **调整内核参数**：
+   ```bash
+   sysctl -w net.ipv4.tcp_tw_reuse=1     # 允许复用TIME_WAIT
+   sysctl -w net.ipv4.tcp_fin_timeout=30 # 缩短FIN超时
+   sysctl -w net.ipv4.ip_local_port_range="1024 65535"  # 扩大端口范围
+   ```
 
 ### Q6: 如何查看某个端口被哪个进程占用？
 
 **答案**：
 ```bash
-lsof -i :8080
-ss -lntp | grep :8080
-netstat -lntp | grep :8080
+lsof -i :8080                # 推荐
+ss -lntp | grep :8080        # 性能更好
+netstat -lntp | grep :8080   # 老版本
+```
+
+### Q7: TCP三次握手的SYN队列和Accept队列有什么区别？队列满了会怎样？
+
+**答案**：
+
+**两个队列**：
+- **SYN队列（半连接）**：收到SYN后，等待ACK
+- **Accept队列（全连接）**：三次握手完成，等待accept()
+
+**队列满的影响**：
+- SYN队列满：新SYN被丢弃，客户端超时 "Connection timed out"
+- Accept队列满：服务器不回复ACK或发RST，"Connection refused"
+
+**调优**：
+```bash
+sysctl -w net.ipv4.tcp_max_syn_backlog=4096  # SYN队列
+sysctl -w net.core.somaxconn=2048            # Accept队列
+```
+
+### Q8: 为什么TCP需要TIME_WAIT？为什么是2MSL？
+
+**答案**：
+
+**两个原因**：
+1. **确保最后的ACK到达**：如果ACK丢失，服务器会重传FIN，客户端需要能响应
+2. **防止旧连接数据干扰新连接**：等待旧连接的包过期
+
+**为什么2MSL**：
+- 1MSL：客户端ACK最多1MSL到达服务器
+- +1MSL：服务器重传FIN最多1MSL返回
+- 总共2MSL，客户端一定能收到重传的FIN
+
+### Q9: Page Cache是什么？为什么数据库不用Page Cache？
+
+**答案**：
+
+**Page Cache**：Linux内核的磁盘缓存
+- 读文件时，内容缓存到内存
+- 下次读取直接从内存返回，无磁盘I/O
+
+**数据库不用的原因**：
+1. **双重缓存**：数据库有自己的Buffer Pool，再用Page Cache浪费内存
+2. **无法精确控制**：Page Cache由内核LRU管理，数据库需要自己控制
+
+**解决方案**：Direct I/O绕过Page Cache
+```sql
+-- MySQL配置
+innodb_flush_method = O_DIRECT
+```
+
+### Q10: strace和perf的区别？生产环境用哪个？
+
+**答案**：
+
+| 工具 | 原理 | 性能影响 | 适用场景 |
+|------|------|----------|----------|
+| **strace** | ptrace拦截系统调用 | 高（10-100x慢） | 开发调试 |
+| **perf** | 硬件PMU计数器采样 | 低（<5%） | **生产环境** |
+
+**生产环境推荐perf**：采样方式，对性能影响小
+
+### Q11: 如何查看进程打开了哪些文件？文件描述符泄漏怎么排查？
+
+**答案**：
+
+**查看文件描述符**：
+```bash
+lsof -p <pid>            # 进程打开的所有文件
+ls -l /proc/<pid>/fd     # fd目录
+cat /proc/<pid>/limits   # fd限制
+```
+
+**排查泄漏**：
+1. `ls /proc/<pid>/fd | wc -l` 统计fd数量
+2. 定期采样，观察是否持续增长
+3. `lsof -p <pid>` 找到大量重复打开的文件
+4. 检查代码：是否忘记close()
+
+### Q12: 如何排查磁盘I/O瓶颈？%util和await分别表示什么？
+
+**答案**：
+
+**排查命令**：
+```bash
+iostat -x 1  # I/O统计
+iotop        # 实时I/O进程
+```
+
+**关键指标**：
+- **%util**：磁盘繁忙程度，>80%说明瓶颈
+- **await**：I/O平均等待时间(ms)，>20ms说明较慢
+- **r/s, w/s**：每秒读写次数
+
+**常见问题**：
+- 频繁小文件读写 → 批量操作
+- 日志写入过多 → 异步日志
+- 数据库查询慢 → 索引优化
+
+### Q13: 如何排查网络丢包？
+
+**答案**：
+
+**排查步骤**：
+```bash
+# 1. 查看网卡丢包
+ethtool -S eth0 | grep -E "drop|error"
+ifconfig eth0 | grep dropped
+
+# 2. 查看内核丢包
+netstat -s | grep -E "drop|error"
+
+# 3. 检查连接队列
+ss -lnt  # Recv-Q > 0 说明积压
+```
+
+**常见原因**：
+- 网卡队列满
+- 连接队列满（somaxconn太小）
+- 内核缓冲区不足
+
+### Q14: 如何触发crash dump进行故障分析？
+
+**答案**：
+
+**两种方法**：
+1. **SysRq魔术键**：`echo c > /proc/sysrq-trigger`
+2. **NMI中断**：`ipmitool chassis power diag`（通过BMC）
+
+**kdump配置**：
+```bash
+# 1. 安装
+yum install kexec-tools
+
+# 2. 配置crashkernel
+GRUB_CMDLINE_LINUX="crashkernel=256M"
+
+# 3. 启用服务
+systemctl enable kdump
+systemctl start kdump
+```
+
+**分析vmcore**：
+```bash
+crash /usr/lib/debug/lib/modules/$(uname -r)/vmlinux /var/crash/*/vmcore
+crash> bt   # 调用栈
+crash> log  # 内核日志
+```
+
+### Q15: 如何定位内核内存泄漏？
+
+**答案**：
+
+**排查流程**：
+1. **对比meminfo**：正常机 vs 异常机，找到差异指标
+2. **定位泄漏类型**：
+   - Slab高：`slabtop -s a` 查看slab分配
+   - Vmalloc高：`cat /proc/vmallocinfo` 统计各函数
+   - Page Alloc：计算公式排除法
+
+**跟踪工具**：
+```bash
+# ftrace跟踪kmalloc
+echo 'stacktrace if bytes_req == 256' > /sys/kernel/debug/tracing/events/kmem/kmalloc/trigger
+
+# perf采样
+perf record -e 'kmem:kmem_cache_alloc' -a -g -- sleep 30
+perf report
 ```
 
 ---
@@ -964,7 +1160,7 @@ cat /proc/sys/fs/file-max          # 系统级限制
 # 为什么有限制？每个fd需要约1KB内核内存，100万fd ≈ 1GB内存
 ```
 
-> 📖 **完整参数配置参考**：TCP/内存/文件系统全量内核参数调优请参考 [IaaS基础设施技术 Part 5 - Linux内核参数调优](../专项知识库/06-IaaS基础设施技术.md)（Section 1），包含BBR拥塞控制对比、文件系统挂载优化等完整配置。
+> 📖 **完整参数配置参考**：TCP/内存/文件系统全量内核参数调优请参考 《专项知识库/06-IaaS基础设施技术》Part 5 - Linux内核参数调优（Section 1），包含BBR拥塞控制对比、文件系统挂载优化等完整配置。
 
 ---
 
@@ -1030,7 +1226,7 @@ pcap_compile(&filter, "tcp port 80");
 // - 类似JIT编译（BPF指令被编译成机器码）
 ```
 
-> 📖 **完整工具用法参考**：perf火焰图生成、sar历史数据分析、iostat指标阈值判断、ss连接详情、tcpdump过滤语法等完整工具手册请参考 [IaaS基础设施技术 Part 5 - 性能分析与网络排障](../专项知识库/06-IaaS基础设施技术.md)（Section 3-5）。
+> 📖 **完整工具用法参考**：perf火焰图生成、sar历史数据分析、iostat指标阈值判断、ss连接详情、tcpdump过滤语法等完整工具手册请参考 《专项知识库/06-IaaS基础设施技术》Part 5 - 性能分析与网络排障（Section 3-5）。
 
 ---
 
@@ -1400,9 +1596,5 @@ Linux排障核心流程：
 - 掌握SOP化排查流程
 - 能够快速定位问题根因
 
-面试时展示**系统化的排查思路**和**实战经验**！🔧
 
 ---
-
-**文件状态**：✅ 已完成（约400行）  
-**下一步**：继续创建后端核心知识库（MySQL、Redis等）...

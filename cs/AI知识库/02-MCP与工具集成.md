@@ -4,15 +4,23 @@
 
 ## 📑 目录
 
+### MCP协议基础
 1. [MCP协议原理](#1-mcp协议原理)
 2. [Server与Client架构](#2-server与client架构)
 3. [Tool工具设计](#3-tool工具设计)
 4. [Resource资源管理](#4-resource资源管理)
 5. [Prompt Templates](#5-prompt-templates)
-6. [安全与权限控制](#6-安全与权限控制)
-7. [性能优化](#7-性能优化)
-8. [调试与排障](#8-调试与排障)
-9. [实战案例](#9-实战案例)
+
+### 进阶特性
+6. [Transport传输层](#6-transport传输层)
+7. [Sampling采样机制](#7-sampling采样机制)
+8. [安全与权限控制](#8-安全与权限控制)
+9. [性能优化](#9-性能优化)
+
+### 运维与实战
+10. [调试与排障](#10-调试与排障)
+11. [实战案例](#11-实战案例)
+12. [面试题自查](#12-面试题自查)
 
 ---
 
@@ -790,9 +798,201 @@ async def sql_query_builder_prompt(table: str, requirements: str):
     }
 ```
 
+### 1.4 MCP vs Function Calling
+
+| 特性 | OpenAI Function Calling | MCP |
+|------|------------------------|-----|
+| **标准化** | OpenAI专有 | 开放协议，跨平台 |
+| **工具定义** | JSON Schema | JSON Schema + 运行时发现 |
+| **资源支持** | 无 | Resource + URI模式 |
+| **双向通信** | 单向（LLM→工具） | 双向（支持Sampling） |
+| **生态** | OpenAI生态 | 多厂商支持 |
+| **传输** | HTTP API | stdio/SSE/WebSocket |
+
+**何时用MCP？**
+- 需要跨多个AI平台
+- 需要资源访问和动态发现
+- 需要复杂的双向交互
+- 需要本地化部署
+
+**何时用Function Calling？**
+- 只使用OpenAI API
+- 简单工具调用场景
+- 快速原型开发
+
 ---
 
-## 6. 安全与权限控制
+## 6. Transport传输层
+
+### 6.1 stdio传输
+
+**最常用的传输方式**，Client通过子进程启动Server：
+
+```python
+# Server端（stdio模式）
+from mcp.server import Server
+import mcp.server.stdio
+
+server = Server("my-server")
+
+@server.tool()
+async def my_tool(param: str) -> str:
+    return f"处理结果：{param}"
+
+if __name__ == "__main__":
+    mcp.server.stdio.run(server)  # 监听stdin/stdout
+```
+
+```python
+# Client端启动Server
+from mcp.client import MCPClient
+from mcp.client.stdio import StdioClientTransport
+
+transport = StdioClientTransport(
+    command="python",
+    args=["-m", "my_mcp_server"],
+    env={"API_KEY": "xxx"}  # 传递环境变量
+)
+
+client = MCPClient()
+await client.connect(transport)
+```
+
+**优点**：简单、安全（进程隔离）、无需网络
+**缺点**：只能单Client连接
+
+### 6.2 SSE传输（Server-Sent Events）
+
+**适用于HTTP环境**，支持远程Server：
+
+```python
+# Server端（SSE模式）
+from mcp.server import Server
+import mcp.server.sse
+
+server = Server("my-server")
+
+# 使用Starlette或FastAPI
+from starlette.applications import Starlette
+from starlette.routing import Route
+
+app = Starlette(
+    routes=[
+        Route("/sse", mcp.server.sse.handle_sse(server)),
+    ]
+)
+
+# 启动
+uvicorn.run(app, host="0.0.0.0", port=8000)
+```
+
+```typescript
+// Client端（TypeScript）
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+
+const transport = new SSEClientTransport(
+    new URL("http://localhost:8000/sse")
+);
+
+const client = new Client({name: "my-client", version: "1.0"});
+await client.connect(transport);
+```
+
+**优点**：支持远程、可部署为Web服务
+**缺点**：单向流（Server→Client），需要额外POST端点
+
+### 6.3 WebSocket传输
+
+**双向实时通信**：
+
+```python
+# Server端（WebSocket）
+from fastapi import FastAPI, WebSocket
+import mcp.server.websocket
+
+app = FastAPI()
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    await mcp.server.websocket.handle_websocket(server, websocket)
+```
+
+**传输方式对比**：
+| 传输 | 场景 | 多Client | 远程 | 双向 |
+|------|------|----------|------|------|
+| stdio | 本地CLI | ❌ | ❌ | ✅ |
+| SSE | Web服务 | ✅ | ✅ | ⚠️ |
+| WebSocket | 实时应用 | ✅ | ✅ | ✅ |
+
+---
+
+## 7. Sampling采样机制
+
+### 7.1 什么是Sampling？
+
+**Sampling**允许MCP Server请求Client（通常是LLM）生成内容，实现双向交互。
+
+**典型场景**：
+- Server需要LLM帮助理解用户意图
+- Server需要LLM生成中间结果
+- 实现Agent-in-the-loop模式
+
+### 7.2 Sampling实现
+
+```python
+# Server端请求Client进行采样
+@server.tool()
+async def smart_search(query: str) -> str:
+    """智能搜索：先让LLM优化查询"""
+    
+    # 1. 请求Client（LLM）优化查询
+    sampling_result = await server.request_sampling(
+        messages=[
+            {
+                "role": "user",
+                "content": {
+                    "type": "text",
+                    "text": f"请将以下搜索词优化为更精确的查询：{query}"
+                }
+            }
+        ],
+        max_tokens=100
+    )
+    
+    optimized_query = sampling_result.content[0].text
+    
+    # 2. 使用优化后的查询搜索
+    results = await vector_db.search(optimized_query)
+    
+    return json.dumps({
+        "original_query": query,
+        "optimized_query": optimized_query,
+        "results": results
+    })
+```
+
+```python
+# Client端需要声明支持Sampling
+client = MCPClient(
+    capabilities={
+        "sampling": {}  # 声明支持Sampling
+    }
+)
+
+# Client需要处理Sampling请求
+@client.on_sampling_request
+async def handle_sampling(request):
+    # 调用LLM生成
+    response = await llm.generate(request.messages)
+    return {
+        "content": [{"type": "text", "text": response}]
+    }
+```
+
+---
+
+## 8. 安全与权限控制
 
 ### 6.1 Hooks机制
 
@@ -948,7 +1148,7 @@ def mask_id_card(id_card: str) -> str:
 
 ---
 
-## 7. 性能优化
+## 9. 性能优化
 
 ### 7.1 缓存
 
@@ -1025,7 +1225,7 @@ class MCPServer:
 
 ---
 
-## 8. 调试与排障
+## 10. 调试与排障
 
 ### 8.1 日志
 
@@ -1128,7 +1328,7 @@ except ValidationError as e:
 
 ---
 
-## 9. 实战案例
+## 11. 实战案例
 
 ### 案例1：知识库MCP Server
 
@@ -1284,12 +1484,512 @@ class DatabaseMCPServer:
 MCP核心要点：
 1. **协议标准**：JSON-RPC 2.0、Tool/Resource/Prompt三大概念
 2. **Server开发**：Python/TypeScript SDK、工具定义、资源管理
-3. **安全控制**：Hooks机制、权限检查、参数验证、结果脱敏
-4. **性能优化**：缓存、批处理、连接池
-5. **调试排障**：日志、Inspector、Schema验证
+3. **传输层**：stdio（本地）、SSE（Web）、WebSocket（实时）
+4. **安全控制**：Hooks机制、权限检查、参数验证、结果脱敏
+5. **性能优化**：缓存、批处理、连接池
+6. **调试排障**：日志、Inspector、Schema验证
 
-面试时展示**MCP Server开发经验**是你的差异化优势！🚀
 
 ---
 
-**文件状态**：✅ 已完成（约800行）
+## 12. 面试题自查
+
+### Q1: MCP是什么？解决了什么问题？
+
+**答案**：
+MCP（Model Context Protocol）是由Anthropic提出的开放协议，用于标准化AI应用与外部工具/数据源的集成。
+
+**解决的问题**：
+1. **碎片化**：每个AI应用都要单独对接各种工具，重复开发
+2. **标准缺失**：Function Calling是厂商专有格式，不通用
+3. **能力受限**：传统方式只能调用工具，无法动态发现资源
+
+**MCP的价值**：
+- 一次开发，多处使用（工具开发者）
+- 统一接口，快速集成（AI应用开发者）
+- 开放生态，避免锁定
+
+---
+
+### Q2: MCP的三大核心概念是什么？
+
+**答案**：
+
+| 概念 | 说明 | 示例 |
+|------|------|------|
+| **Tool** | 可执行的功能，LLM可以调用 | 搜索、计算、发送邮件 |
+| **Resource** | 可读取的数据资源，URI寻址 | 文件、数据库记录、配置 |
+| **Prompt** | 预定义的提示模板 | 代码审查模板、SQL生成模板 |
+
+**区别**：
+- Tool是"动词"——执行操作
+- Resource是"名词"——获取数据
+- Prompt是"模板"——标准化交互
+
+---
+
+### Q3: MCP与OpenAI Function Calling有什么区别？
+
+**答案**：
+
+| 维度 | Function Calling | MCP |
+|------|------------------|-----|
+| 标准化 | OpenAI专有 | 开放协议 |
+| 工具发现 | 预定义 | 运行时动态发现 |
+| 资源访问 | 不支持 | Resource + URI |
+| 双向通信 | 单向 | 支持Sampling |
+| 传输方式 | HTTP API | stdio/SSE/WebSocket |
+| 多Server | 不支持 | 支持 |
+
+**选择建议**：
+- 简单场景、只用OpenAI → Function Calling
+- 跨平台、复杂集成、本地部署 → MCP
+
+---
+
+### Q4: MCP支持哪些传输方式？各有什么特点？
+
+**答案**：
+
+| 传输 | 原理 | 适用场景 | 多Client | 远程 |
+|------|------|----------|----------|------|
+| **stdio** | 子进程stdin/stdout | 本地CLI工具、桌面应用 | ❌ | ❌ |
+| **SSE** | HTTP Server-Sent Events | Web服务部署 | ✅ | ✅ |
+| **WebSocket** | 全双工连接 | 实时应用、长连接 | ✅ | ✅ |
+
+**选择原则**：
+- 本地单用户 → stdio（最简单）
+- 远程/多用户 → SSE或WebSocket
+- 需要实时双向 → WebSocket
+
+---
+
+### Q5: 如何设计一个好的MCP Tool？
+
+**答案**：
+
+**1. 单一职责**
+```python
+# ❌ 不好
+async def database_op(action, table, data): ...
+
+# ✅ 好
+async def insert_record(table, data): ...
+async def update_record(table, id, data): ...
+```
+
+**2. 清晰描述**
+- 说明功能、参数、返回值
+- 提供使用示例
+- 注明适用场景
+
+**3. 严格验证**
+- 必填参数检查
+- 类型和范围验证
+- 业务规则校验
+
+**4. 优雅错误处理**
+- 结构化错误响应
+- 区分错误类型
+- 提供修复建议
+
+**5. 幂等性设计**
+- 重复调用不产生副作用
+- 或提供幂等键
+
+---
+
+### Q6: MCP的Sampling机制是什么？有什么用？
+
+**答案**：
+**Sampling**允许Server请求Client（LLM）生成内容，实现双向交互。
+
+**普通调用**：Client → Server（调用工具）
+**Sampling**：Server → Client（请求LLM生成）
+
+**应用场景**：
+1. **查询优化**：Server让LLM重写用户查询
+2. **结果解释**：Server让LLM解释查询结果
+3. **Agent-in-loop**：工具执行过程中需要LLM决策
+
+**示例**：
+```python
+@server.tool()
+async def smart_search(query: str):
+    # 请求LLM优化查询
+    result = await server.request_sampling(
+        messages=[{"role": "user", "content": f"优化查询：{query}"}]
+    )
+    optimized = result.content[0].text
+    return await search(optimized)
+```
+
+---
+
+### Q7: 如何保证MCP工具调用的安全性？
+
+**答案**：
+
+**1. Hooks机制**
+```python
+@server.before_tool_call
+async def check_permission(tool_name, args, context):
+    # 权限检查
+    if tool_name in sensitive_tools and not is_admin(context):
+        return HookResult(allowed=False, reason="需要管理员权限")
+```
+
+**2. 参数验证**
+- JSON Schema验证
+- 业务规则校验
+- 防注入（SQL、路径遍历）
+
+**3. 速率限制**
+```python
+if not rate_limiter.allow(user_id, tool_name):
+    return error("请求过于频繁")
+```
+
+**4. 结果脱敏**
+- 敏感字段脱敏（手机号、身份证）
+- 日志脱敏
+
+**5. 审计日志**
+- 记录所有调用
+- 敏感操作告警
+
+---
+
+### Q8: MCP Server如何做性能优化？
+
+**答案**：
+
+**1. 缓存**
+```python
+@lru_cache(maxsize=100)
+async def cached_search(query, top_k):
+    return await vector_db.search(query, top_k)
+```
+
+**2. 批处理**
+```python
+# 一次调用处理多个查询
+async def batch_search(queries: list[str]):
+    tasks = [search(q) for q in queries]
+    return await asyncio.gather(*tasks)
+```
+
+**3. 连接池**
+- 数据库连接池
+- HTTP连接池
+
+**4. 并发控制**
+```python
+semaphore = Semaphore(10)  # 最多10并发
+async with semaphore:
+    await expensive_operation()
+```
+
+**5. 异步IO**
+- 所有IO操作使用async/await
+- 避免阻塞调用
+
+---
+
+### Q9: JSON Schema在MCP中如何使用？
+
+**答案**：
+MCP使用JSON Schema定义Tool的输入参数。
+
+**常用类型**：
+```json
+{
+  "string": {"type": "string", "minLength": 1, "maxLength": 100},
+  "number": {"type": "number", "minimum": 0, "maximum": 1000},
+  "integer": {"type": "integer", "multipleOf": 10},
+  "boolean": {"type": "boolean"},
+  "array": {"type": "array", "items": {...}, "minItems": 1},
+  "object": {"type": "object", "properties": {...}},
+  "enum": {"type": "string", "enum": ["A", "B", "C"]}
+}
+```
+
+**format扩展**：
+```json
+{
+  "email": {"type": "string", "format": "email"},
+  "date": {"type": "string", "format": "date"},
+  "uri": {"type": "string", "format": "uri"},
+  "uuid": {"type": "string", "format": "uuid"}
+}
+```
+
+**验证示例**：
+```python
+from jsonschema import validate
+validate({"query": "test", "top_k": 5}, schema)
+```
+
+---
+
+### Q10: 如何调试MCP Server？
+
+**答案**：
+
+**1. MCP Inspector**
+```bash
+npm install -g @modelcontextprotocol/inspector
+mcp-inspector python -m my_server
+# 浏览器访问 http://localhost:5173
+```
+
+**2. 详细日志**
+```python
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger('mcp')
+
+@server.tool()
+async def my_tool(param):
+    logger.debug(f"调用参数：{param}")
+    result = await process(param)
+    logger.debug(f"返回结果：{result}")
+    return result
+```
+
+**3. 环境变量**
+```bash
+export MCP_DEBUG=1  # 显示完整JSON-RPC消息
+```
+
+**4. Schema验证测试**
+```python
+from jsonschema import validate, ValidationError
+try:
+    validate(params, schema)
+except ValidationError as e:
+    print(f"参数错误：{e.message}")
+```
+
+---
+
+### Q11: MCP的Resource和Tool有什么区别？何时用哪个？
+
+**答案**：
+
+| 维度 | Tool | Resource |
+|------|------|----------|
+| 语义 | 动作/操作 | 数据/内容 |
+| 调用方式 | 传参数执行 | URI寻址读取 |
+| 幂等性 | 不保证 | 天然幂等 |
+| 缓存 | 通常不缓存 | 可缓存 |
+
+**使用Tool的场景**：
+- 需要执行操作（创建、修改、删除）
+- 需要复杂参数
+- 结果每次可能不同
+
+**使用Resource的场景**：
+- 读取静态/半静态数据
+- 数据有明确的URI标识
+- 需要支持缓存
+
+**示例**：
+```python
+# Tool：执行搜索（需要参数，结果变化）
+@server.tool()
+async def search(query: str, top_k: int): ...
+
+# Resource：读取配置（URI标识，相对稳定）
+@server.resource("config://database")
+async def get_db_config(): ...
+```
+
+---
+
+### Q12: 如何实现多个MCP Server的协同？
+
+**答案**：
+
+**架构设计**：
+```
+[AI Application]
+       ↓
+  [MCP Client]
+       ↓
+ ┌─────┴─────┐
+ ↓           ↓
+[Server A]  [Server B]
+知识库       数据库
+```
+
+**Client连接多Server**：
+```python
+client = MCPClient()
+
+# 连接多个Server
+await client.connect("knowledge", command="python", args=["-m", "kb_server"])
+await client.connect("database", command="python", args=["-m", "db_server"])
+
+# 调用不同Server的工具
+kb_result = await client.call_tool("knowledge", "search", {"query": "xxx"})
+db_result = await client.call_tool("database", "query", {"sql": "..."})
+```
+
+**工具路由**：
+- 按前缀区分：`kb_search`, `db_query`
+- 按Server名区分
+
+**数据流转**：
+- Server A的结果可以作为Server B的输入
+- Client负责编排
+
+---
+
+### Q13: MCP的错误处理最佳实践？
+
+**答案**：
+
+**1. 错误分类**
+```python
+class ToolError(Enum):
+    INVALID_PARAMS = "参数错误"
+    NOT_FOUND = "资源不存在"
+    PERMISSION_DENIED = "权限不足"
+    RATE_LIMITED = "请求过频"
+    INTERNAL_ERROR = "系统错误"
+```
+
+**2. 结构化响应**
+```python
+def error_response(error_type, detail=None):
+    return json.dumps({
+        "success": False,
+        "error": {
+            "type": error_type.name,
+            "message": error_type.value,
+            "detail": detail
+        }
+    })
+```
+
+**3. 分层处理**
+```python
+@server.tool()
+async def my_tool(param):
+    # 1. 参数验证
+    if not param:
+        return error_response(ToolError.INVALID_PARAMS, "param不能为空")
+    
+    # 2. 业务逻辑（try-catch）
+    try:
+        result = await process(param)
+        return success_response(result)
+    except NotFoundException:
+        return error_response(ToolError.NOT_FOUND)
+    except Exception as e:
+        logger.exception(e)
+        return error_response(ToolError.INTERNAL_ERROR)
+```
+
+**4. 提供修复建议**
+```json
+{
+  "error": {
+    "type": "INVALID_PARAMS",
+    "message": "参数top_k超出范围",
+    "suggestion": "top_k应在1-20之间"
+  }
+}
+```
+
+---
+
+### Q14: MCP在生产环境部署需要注意什么？
+
+**答案**：
+
+**1. 可观测性**
+- 接入监控（Prometheus/Grafana）
+- 分布式追踪（Jaeger/Zipkin）
+- 日志聚合（ELK/Loki）
+
+**2. 高可用**
+- 多实例部署
+- 负载均衡（SSE/WebSocket模式）
+- 健康检查
+
+**3. 安全加固**
+- TLS加密（远程传输）
+- 认证鉴权
+- 网络隔离
+
+**4. 资源限制**
+- 请求超时
+- 内存限制
+- 并发控制
+
+**5. 版本管理**
+- 工具版本化
+- 向后兼容
+- 灰度发布
+
+---
+
+### Q15: 如何测试MCP Server？
+
+**答案**：
+
+**1. 单元测试**
+```python
+import pytest
+
+@pytest.mark.asyncio
+async def test_search_tool():
+    result = await search("分布式事务", top_k=3)
+    data = json.loads(result)
+    
+    assert "results" in data
+    assert len(data["results"]) <= 3
+```
+
+**2. 集成测试**
+```python
+@pytest.mark.asyncio
+async def test_client_integration():
+    client = MCPClient()
+    await client.connect("test", command="python", args=["-m", "server"])
+    
+    # 测试工具列表
+    tools = await client.list_tools()
+    assert "search" in [t.name for t in tools]
+    
+    # 测试工具调用
+    result = await client.call_tool("search", {"query": "test"})
+    assert result.content[0].type == "text"
+```
+
+**3. Schema验证测试**
+```python
+def test_tool_schema():
+    schema = get_tool_schema("search")
+    
+    # 有效参数
+    validate({"query": "test"}, schema)  # 通过
+    
+    # 无效参数
+    with pytest.raises(ValidationError):
+        validate({"query": ""}, schema)  # minLength=1
+```
+
+**4. Mock测试**
+```python
+@pytest.fixture
+def mock_db():
+    with patch("server.vector_db") as mock:
+        mock.search.return_value = [{"title": "test"}]
+        yield mock
+
+async def test_with_mock(mock_db):
+    result = await search("query", 5)
+    mock_db.search.assert_called_once_with("query", 5)
+```

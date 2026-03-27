@@ -4,29 +4,18 @@
 
 ## 📑 目录
 
-- [浏览器架构](#浏览器架构)
-  - [多进程架构](#多进程架构)
-  - [渲染进程](#渲染进程)
-- [页面渲染原理](#页面渲染原理)
-  - [关键渲染路径](#关键渲染路径)
-  - [重排与重绘](#重排与重绘)
-  - [合成层优化](#合成层优化)
-- [浏览器缓存](#浏览器缓存)
-  - [强缓存](#强缓存)
-  - [协商缓存](#协商缓存)
-  - [缓存策略](#缓存策略)
-- [跨域问题](#跨域问题)
-  - [同源策略](#同源策略)
-  - [CORS](#cors)
-  - [其他跨域方案](#其他跨域方案)
-- [Web安全](#web安全)
-  - [XSS攻击](#xss攻击)
-  - [CSRF攻击](#csrf攻击)
-  - [点击劫持](#点击劫持)
-  - [SQL注入](#sql注入)
-  - [中间人攻击](#中间人攻击)
-- [HTTPS原理](#https原理)
-- [常见面试题](#常见面试题)
+### 浏览器原理
+1. [浏览器架构](#浏览器架构)（多进程架构、渲染进程）
+2. [页面渲染原理](#页面渲染原理)（关键渲染路径、重排与重绘、合成层优化）
+3. [浏览器缓存](#浏览器缓存)（强缓存、协商缓存、缓存策略）
+
+### 网络与跨域
+4. [跨域问题](#跨域问题)（同源策略、CORS、其他跨域方案）
+5. [HTTPS原理](#https原理)
+
+### Web安全与自查
+6. [Web安全](#web安全)（XSS、CSRF、点击劫持、SQL注入、中间人攻击）
+7. [面试题自查](#面试题自查)
 
 ---
 
@@ -1035,84 +1024,757 @@ Client                                Server
 
 ---
 
-## 常见面试题
+## 面试题自查
 
-### 1. 浏览器输入URL到页面显示的完整过程？
+### Q1：浏览器输入URL到页面显示的完整过程？
 
 **答**：
-1. **DNS解析**：域名 → IP地址
-2. **TCP连接**：三次握手
-3. **发送HTTP请求**
-4. **服务器处理请求**
-5. **返回HTTP响应**
-6. **浏览器解析HTML**：构建DOM Tree
-7. **解析CSS**：构建CSSOM Tree
-8. **合并生成Render Tree**
-9. **Layout**：计算位置大小
-10. **Paint**：绘制像素
-11. **Composite**：合成图层
-12. **显示页面**
+```
+1. URL解析
+   - 判断是URL还是搜索关键词
+   - 解析协议、域名、端口、路径
+
+2. DNS解析
+   - 浏览器缓存 → 系统缓存 → 路由器缓存 → ISP DNS → 根域名服务器
+   - 域名 → IP地址
+
+3. TCP连接
+   - 三次握手建立连接
+   - 如果是HTTPS，还有TLS握手
+
+4. 发送HTTP请求
+   - 请求行、请求头、请求体
+   - 携带Cookie
+
+5. 服务器处理请求
+   - 接收请求 → 处理 → 返回响应
+
+6. 浏览器接收响应
+   - 检查状态码（200/301/304/404等）
+   - 检查缓存（协商缓存304）
+
+7. 解析HTML
+   - 构建DOM Tree
+   - 遇到CSS：异步加载，但阻塞渲染
+   - 遇到JS：阻塞DOM解析（除非async/defer）
+
+8. 解析CSS
+   - 构建CSSOM Tree
+
+9. 生成Render Tree
+   - DOM + CSSOM → Render Tree
+   - 不包含display:none元素
+
+10. Layout（布局）
+    - 计算每个元素的位置和大小
+
+11. Paint（绘制）
+    - 生成绘制指令
+
+12. Composite（合成）
+    - 多图层合成最终画面
+
+13. 显示页面
+```
 
 ---
 
-### 2. 如何优化首屏加载速度？
+### Q2：如何优化首屏加载速度？
 
 **答**：
-1. **减少资源体积**：压缩、Tree Shaking、Code Splitting
-2. **使用CDN**：加速静态资源加载
-3. **强缓存**：静态资源长期缓存
-4. **懒加载**：图片、组件按需加载
-5. **SSR/SSG**：服务端渲染/静态生成
-6. **预加载**：`<link rel="preload">`
-7. **HTTP/2**：多路复用
-8. **Gzip/Brotli压缩**
+```javascript
+// 1. 资源优化
+// - 压缩JS/CSS/HTML（Terser、cssnano）
+// - 图片压缩和格式优化（WebP、AVIF）
+// - Tree Shaking去除无用代码
+// - Code Splitting代码分割
+
+// 2. 网络优化
+// - 使用CDN加速
+// - 开启Gzip/Brotli压缩
+// - HTTP/2多路复用
+// - 预连接：<link rel="preconnect">
+// - 预加载：<link rel="preload">
+// - DNS预解析：<link rel="dns-prefetch">
+
+// 3. 缓存优化
+// - 静态资源设置强缓存（Cache-Control: max-age=31536000）
+// - HTML文件设置协商缓存
+
+// 4. 渲染优化
+// - SSR服务端渲染
+// - SSG静态站点生成
+// - 关键CSS内联
+// - 非关键CSS异步加载
+// - JS放在body底部或使用defer
+
+// 5. 懒加载
+// - 图片懒加载（Intersection Observer）
+// - 路由懒加载
+// - 组件懒加载（React.lazy）
+
+// 6. 骨架屏
+// - 提升用户感知速度
+```
 
 ---
 
-### 3. 如何防御XSS攻击？
+### Q3：如何防御XSS攻击？
 
 **答**：
-1. **输出转义**：HTML、JavaScript、CSS、URL转义
-2. **CSP**：限制脚本来源
-3. **HttpOnly Cookie**：JavaScript无法读取
-4. **输入验证**：白名单过滤
-5. **使用框架**：React、Vue自动转义
+```javascript
+// 1. 输出转义（最重要）
+function escapeHtml(str) {
+  const map = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#x27;',
+    '/': '&#x2F;',
+  };
+  return str.replace(/[&<>"'/]/g, char => map[char]);
+}
+
+// 2. CSP（Content Security Policy）
+// 响应头：
+Content-Security-Policy: default-src 'self'; script-src 'self' https://trusted.com
+// 禁止内联脚本、只允许白名单域名的脚本
+
+// 3. HttpOnly Cookie
+Set-Cookie: sessionId=xxx; HttpOnly; Secure; SameSite=Strict
+// JS无法读取Cookie
+
+// 4. 使用现代框架
+// React：自动转义JSX内容
+// Vue：自动转义模板内容
+// 避免使用v-html、dangerouslySetInnerHTML
+
+// 5. 输入验证
+// 白名单过滤，拒绝非法字符
+
+// 6. 富文本处理
+// 使用DOMPurify等库净化HTML
+import DOMPurify from 'dompurify';
+const clean = DOMPurify.sanitize(dirty);
+```
 
 ---
 
-### 4. 强缓存和协商缓存的区别？
+### Q4：强缓存和协商缓存的区别？
 
 **答**：
-
-**强缓存**：
-- 浏览器不发送请求，直接使用缓存
-- Cache-Control、Expires
+```
+强缓存：
+- 不发请求，直接使用本地缓存
+- HTTP头：Cache-Control（优先）、Expires
 - 状态码：200 (from disk/memory cache)
+- 适用：静态资源（JS/CSS/图片）
 
-**协商缓存**：
-- 浏览器发送请求询问服务器
-- Last-Modified/If-Modified-Since、ETag/If-None-Match
-- 状态码：304 Not Modified（缓存可用）或 200（缓存失效）
+协商缓存：
+- 发请求询问服务器
+- HTTP头：ETag/If-None-Match（优先）、Last-Modified/If-Modified-Since
+- 状态码：304 Not Modified（使用缓存）或 200（返回新资源）
+- 适用：HTML、API接口
+
+缓存流程：
+1. 浏览器请求资源
+2. 检查强缓存是否过期？
+   - 未过期 → 直接使用缓存（200 from cache）
+   - 已过期 → 进入协商缓存
+3. 协商缓存
+   - 发送If-None-Match/If-Modified-Since
+   - 服务器比较
+   - 未变化 → 304
+   - 已变化 → 200 + 新资源
+
+最佳实践：
+- HTML: no-cache + ETag（每次协商）
+- 静态资源（带hash）: max-age=31536000（强缓存1年）
+- API: no-store（不缓存）
+```
 
 ---
 
-### 5. 什么是CORS？如何配置？
+### Q5：什么是CORS？预检请求是什么？
 
 **答**：
-- **定义**：跨域资源共享，服务器允许浏览器跨域访问
-- **简单请求**：直接发送请求，服务器返回 `Access-Control-Allow-Origin`
-- **预检请求**：先发送OPTIONS请求，验证后再发送实际请求
-- **配置**：
-  ```javascript
-  res.header('Access-Control-Allow-Origin', 'https://example.com');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT');
-  res.header('Access-Control-Allow-Headers', 'Content-Type');
-  res.header('Access-Control-Allow-Credentials', 'true');
-  ```
+```
+CORS（Cross-Origin Resource Sharing）跨域资源共享
+
+同源策略：协议 + 域名 + 端口 相同才能互相访问
+
+简单请求：
+- 方法：GET、POST、HEAD
+- 请求头：Accept、Content-Type等（Content-Type仅限text/plain、multipart/form-data、application/x-www-form-urlencoded）
+- 直接发送，服务器返回Access-Control-Allow-Origin
+
+预检请求（Preflight）：
+- 非简单请求先发送OPTIONS请求
+- 触发条件：
+  * 方法：PUT、DELETE、PATCH
+  * 自定义请求头
+  * Content-Type: application/json
+
+预检请求流程：
+1. 浏览器发送OPTIONS请求
+   Origin: https://example.com
+   Access-Control-Request-Method: PUT
+   Access-Control-Request-Headers: Content-Type
+
+2. 服务器响应
+   Access-Control-Allow-Origin: https://example.com
+   Access-Control-Allow-Methods: PUT
+   Access-Control-Allow-Headers: Content-Type
+   Access-Control-Max-Age: 86400  // 预检结果缓存24小时
+
+3. 浏览器发送实际请求
+
+4. 服务器返回数据
+```
 
 ---
 
-**总结**
+### Q6：重排（Reflow）和重绘（Repaint）的区别？如何优化？
+
+**答**：
+```javascript
+// 重排（Reflow）：元素位置/大小变化，重新计算布局
+// 触发：修改width/height/padding/margin、增删DOM、读取布局属性
+
+// 重绘（Repaint）：元素外观变化，重新绘制
+// 触发：修改color/background/visibility
+
+// 性能影响：重排 > 重绘（重排必然导致重绘）
+
+// 优化策略：
+
+// 1. 批量修改样式
+// ❌ 多次触发
+element.style.width = '100px';
+element.style.height = '100px';
+// ✅ 一次触发
+element.className = 'updated';
+// 或
+element.style.cssText = 'width:100px;height:100px';
+
+// 2. 离线操作DOM
+const fragment = document.createDocumentFragment();
+for (let i = 0; i < 100; i++) {
+  fragment.appendChild(document.createElement('div'));
+}
+document.body.appendChild(fragment);
+
+// 3. 避免Layout Thrashing
+// ❌ 读写交错
+for (let i = 0; i < 100; i++) {
+  const h = element.offsetHeight;  // 读（触发重排）
+  element.style.height = h + 10 + 'px';  // 写
+}
+// ✅ 先读后写
+const h = element.offsetHeight;
+for (let i = 0; i < 100; i++) {
+  element.style.height = h + 10 * i + 'px';
+}
+
+// 4. 使用transform/opacity（只触发合成）
+// ❌ 触发重排
+element.style.left = '100px';
+// ✅ 只触发合成
+element.style.transform = 'translateX(100px)';
+```
+
+---
+
+### Q7：浏览器的事件循环（Event Loop）机制？
+
+**答**：
+```javascript
+// 浏览器Event Loop机制
+
+// 任务类型：
+// 1. 宏任务（Macro Task）：setTimeout、setInterval、I/O、UI渲染
+// 2. 微任务（Micro Task）：Promise.then、MutationObserver、queueMicrotask
+
+// 执行顺序：
+// 1. 执行同步代码（主线程）
+// 2. 清空微任务队列
+// 3. 执行一个宏任务
+// 4. 清空微任务队列
+// 5. 重复3-4
+
+console.log('1');  // 同步
+
+setTimeout(() => console.log('2'), 0);  // 宏任务
+
+Promise.resolve().then(() => console.log('3'));  // 微任务
+
+console.log('4');  // 同步
+
+// 输出：1 4 3 2
+
+// 复杂例子
+console.log('start');
+
+setTimeout(() => {
+  console.log('setTimeout1');
+  Promise.resolve().then(() => console.log('promise1'));
+}, 0);
+
+Promise.resolve().then(() => {
+  console.log('promise2');
+  setTimeout(() => console.log('setTimeout2'), 0);
+});
+
+console.log('end');
+
+// 输出：start end promise2 setTimeout1 promise1 setTimeout2
+```
+
+---
+
+### Q8：什么是合成层（Composite Layer）？如何利用它优化性能？
+
+**答**：
+```css
+/* 合成层：浏览器为某些元素创建单独的图层，在GPU上渲染 */
+
+/* 触发合成层的条件：
+   1. 3D变换：transform: translateZ(0)
+   2. will-change: transform/opacity
+   3. video、canvas、iframe
+   4. CSS动画（transform/opacity）
+*/
+
+/* 合成层的优势：
+   - 变化时不触发重排重绘
+   - GPU加速
+   - 与其他层独立，不影响其他元素
+*/
+
+/* 优化示例 */
+/* ❌ 普通动画（触发重排） */
+@keyframes move {
+  from { left: 0; }
+  to { left: 100px; }
+}
+
+/* ✅ 合成层动画（GPU加速） */
+@keyframes move-optimized {
+  from { transform: translateX(0); }
+  to { transform: translateX(100px); }
+}
+
+/* 手动创建合成层 */
+.optimized {
+  will-change: transform;
+  /* 或 */
+  transform: translateZ(0);
+}
+
+/* 注意：
+   - 合成层过多会增加内存占用
+   - 不要滥用will-change
+   - 动画结束后移除will-change
+*/
+```
+
+---
+
+### Q9：Service Worker是什么？有什么用？
+
+**答**：
+```javascript
+// Service Worker：独立于网页的后台脚本，实现离线缓存、推送通知等
+
+// 生命周期：installing → installed → activating → activated
+
+// 注册
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js')
+    .then(reg => console.log('SW注册成功'))
+    .catch(err => console.log('SW注册失败', err));
+}
+
+// sw.js
+const CACHE_NAME = 'v1';
+const CACHE_URLS = ['/', '/index.html', '/style.css', '/app.js'];
+
+// 安装：缓存资源
+self.addEventListener('install', event => {
+  event.waitUntil(
+    caches.open(CACHE_NAME)
+      .then(cache => cache.addAll(CACHE_URLS))
+  );
+});
+
+// 激活：清理旧缓存
+self.addEventListener('activate', event => {
+  event.waitUntil(
+    caches.keys().then(keys => 
+      Promise.all(keys
+        .filter(key => key !== CACHE_NAME)
+        .map(key => caches.delete(key))
+      )
+    )
+  );
+});
+
+// 拦截请求：缓存优先策略
+self.addEventListener('fetch', event => {
+  event.respondWith(
+    caches.match(event.request)
+      .then(response => response || fetch(event.request))
+  );
+});
+
+// 应用场景：
+// 1. PWA离线应用
+// 2. 缓存静态资源
+// 3. 推送通知
+// 4. 后台同步
+```
+
+---
+
+### Q10：什么是CSRF攻击？如何防御？
+
+**答**：
+```javascript
+// CSRF（Cross-Site Request Forgery）跨站请求伪造
+// 攻击者诱导用户在已登录的网站执行非本意操作
+
+// 攻击场景：
+// 1. 用户登录bank.com，Cookie生效
+// 2. 用户访问evil.com
+// 3. evil.com包含：<img src="https://bank.com/transfer?to=attacker&amount=1000">
+// 4. 浏览器自动携带Cookie发送请求
+// 5. 转账成功（用户不知情）
+
+// 防御方法：
+
+// 1. CSRF Token
+// 服务器生成Token，表单提交时验证
+app.post('/transfer', (req, res) => {
+  if (req.body.csrfToken !== req.session.csrfToken) {
+    return res.status(403).send('Invalid CSRF token');
+  }
+  // 处理转账
+});
+
+// 2. SameSite Cookie
+Set-Cookie: sessionId=xxx; SameSite=Strict
+// Strict：Cookie只在同站请求发送
+// Lax：导航到目标网站的GET请求可发送
+// None：所有请求都发送（需要Secure）
+
+// 3. 验证Referer/Origin
+app.post('/transfer', (req, res) => {
+  const origin = req.headers.origin;
+  if (origin !== 'https://bank.com') {
+    return res.status(403).send('Invalid origin');
+  }
+});
+
+// 4. 双重Cookie验证
+// 在Cookie和请求参数中都发送Token，服务器比较两者
+```
+
+---
+
+### Q11：浏览器的多进程架构有什么优缺点？
+
+**答**：
+```
+Chrome多进程架构：
+- Browser进程：UI、网络、存储
+- Renderer进程：每个标签页一个（渲染、JS执行）
+- GPU进程：3D渲染、合成
+- Plugin进程：插件
+
+优点：
+1. 稳定性
+   - 单个标签页崩溃不影响其他标签页
+   - 插件崩溃不影响浏览器
+
+2. 安全性
+   - 渲染进程沙箱隔离
+   - 恶意代码无法访问系统资源
+   - 不同源的标签页进程隔离
+
+3. 性能
+   - 多核CPU并行处理
+   - 单个标签页卡顿不影响其他
+
+缺点：
+1. 内存占用高
+   - 每个进程有独立内存空间
+   - Chrome是"内存杀手"
+
+2. 进程间通信开销
+   - IPC有性能损耗
+
+3. 资源消耗
+   - 每个进程都有基础开销
+
+优化措施：
+- 站点隔离（Site Isolation）：同站标签页共享进程
+- 内存回收：后台标签页内存可被回收
+```
+
+---
+
+### Q12：script标签的async和defer有什么区别？
+
+**答**：
+```html
+<!-- 普通script：阻塞HTML解析 -->
+<script src="app.js"></script>
+<!--
+  HTML解析 → 暂停 → 下载JS → 执行JS → 继续HTML解析
+-->
+
+<!-- async：异步下载，下载完立即执行 -->
+<script async src="app.js"></script>
+<!--
+  HTML解析不暂停
+  JS下载完成后立即执行（暂停HTML解析）
+  执行顺序不确定
+  适合：独立脚本（如统计代码）
+-->
+
+<!-- defer：异步下载，HTML解析完后执行 -->
+<script defer src="app.js"></script>
+<!--
+  HTML解析不暂停
+  HTML解析完成后，DOMContentLoaded之前执行
+  按顺序执行
+  适合：依赖DOM的脚本
+-->
+
+<!-- 执行时机对比 -->
+<!--
+  普通：  ████ 下载 ██ 执行
+  async： HTML解析...  ████ 下载 ██ 执行  ...继续解析
+  defer： HTML解析...  ████ 下载 ...解析完成... ██ 执行
+-->
+
+<!-- 使用建议 -->
+<head>
+  <!-- 第三方独立脚本 -->
+  <script async src="analytics.js"></script>
+  
+  <!-- 依赖DOM的脚本 -->
+  <script defer src="app.js"></script>
+</head>
+```
+
+---
+
+### Q13：LocalStorage、SessionStorage和Cookie的区别？
+
+**答**：
+```javascript
+// 存储对比
+/*
+| 特性 | Cookie | LocalStorage | SessionStorage |
+|------|--------|--------------|----------------|
+| 容量 | 4KB | 5-10MB | 5-10MB |
+| 生命周期 | 可设置过期时间 | 永久（手动删除） | 会话级（关闭标签页失效） |
+| 服务器访问 | 每次请求自动发送 | 不发送 | 不发送 |
+| 同源策略 | 受限 | 受限 | 受限（且不跨标签页） |
+| API | document.cookie | getItem/setItem | getItem/setItem |
+*/
+
+// Cookie
+document.cookie = 'name=value; expires=Thu, 01 Jan 2025 00:00:00 GMT; path=/; secure; httponly';
+// 特点：
+// - 可设置HttpOnly（JS不可读）
+// - 可设置Secure（仅HTTPS）
+// - 可设置SameSite（防CSRF）
+// - 每次请求自动发送（可能浪费带宽）
+
+// LocalStorage
+localStorage.setItem('key', 'value');
+localStorage.getItem('key');
+localStorage.removeItem('key');
+localStorage.clear();
+// 特点：
+// - 同源所有标签页共享
+// - 永久存储（除非手动删除）
+// - 容量大（5-10MB）
+
+// SessionStorage
+sessionStorage.setItem('key', 'value');
+// 特点：
+// - 仅当前标签页有效
+// - 关闭标签页/浏览器失效
+// - 刷新页面不失效
+
+// 使用场景：
+// - Cookie：身份认证（HttpOnly）
+// - LocalStorage：用户偏好、缓存数据
+// - SessionStorage：表单数据暂存、一次性数据
+```
+
+---
+
+### Q14：什么是内容安全策略（CSP）？如何配置？
+
+**答**：
+```html
+<!-- CSP（Content Security Policy）：防止XSS等攻击 -->
+
+<!-- 通过HTTP响应头配置 -->
+<!--
+Content-Security-Policy: default-src 'self'; script-src 'self' https://trusted.com; style-src 'self' 'unsafe-inline'
+-->
+
+<!-- 通过meta标签配置 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'">
+
+<!-- 常用指令 -->
+<!--
+default-src: 默认策略
+script-src: JavaScript来源
+style-src: CSS来源
+img-src: 图片来源
+font-src: 字体来源
+connect-src: AJAX/WebSocket来源
+frame-src: iframe来源
+-->
+
+<!-- 常用值 -->
+<!--
+'self': 同源
+'none': 禁止
+'unsafe-inline': 允许内联（不安全）
+'unsafe-eval': 允许eval（不安全）
+https://example.com: 指定域名
+-->
+
+<!-- 示例配置 -->
+<!--
+# 只允许同源脚本
+Content-Security-Policy: script-src 'self'
+
+# 禁止内联脚本，允许指定CDN
+Content-Security-Policy: script-src 'self' https://cdn.example.com
+
+# 报告违规但不阻止
+Content-Security-Policy-Report-Only: script-src 'self'; report-uri /csp-report
+
+# 升级不安全请求
+Content-Security-Policy: upgrade-insecure-requests
+-->
+```
+
+---
+
+### Q15：什么是HTTP/2？相比HTTP/1.1有什么优势？
+
+**答**：
+```
+HTTP/2特性：
+
+1. 多路复用（Multiplexing）
+   - 单个TCP连接可并行多个请求/响应
+   - 解决HTTP/1.1的队头阻塞问题
+   - 不需要多个TCP连接
+
+2. 头部压缩（HPACK）
+   - 使用静态表和动态表压缩头部
+   - 减少重复头部传输
+   - 节省带宽
+
+3. 服务器推送（Server Push）
+   - 服务器主动推送资源
+   - 如：推送CSS/JS，减少请求
+
+4. 二进制分帧
+   - HTTP/1.1是文本协议
+   - HTTP/2是二进制协议
+   - 更高效的解析
+
+5. 流优先级
+   - 可以设置资源优先级
+   - 关键资源优先加载
+
+HTTP/1.1 vs HTTP/2：
+| 特性 | HTTP/1.1 | HTTP/2 |
+|------|----------|--------|
+| 连接 | 多个TCP连接 | 单个TCP多路复用 |
+| 头部 | 文本，重复传输 | 二进制，压缩 |
+| 服务器推送 | 不支持 | 支持 |
+| 队头阻塞 | 有 | 解决 |
+
+注意：HTTP/2的TCP层仍有队头阻塞，HTTP/3（QUIC）解决
+```
+
+---
+
+### Q16：preload、prefetch、preconnect的区别？
+
+**答**：
+```html
+<!-- preload：预加载当前页面必需的资源 -->
+<link rel="preload" href="critical.css" as="style">
+<link rel="preload" href="main.js" as="script">
+<link rel="preload" href="font.woff2" as="font" crossorigin>
+<!-- 
+  - 高优先级加载
+  - 当前页面一定会用到
+  - 必须指定as属性
+  - 跨域资源需要crossorigin
+-->
+
+<!-- prefetch：预获取将来可能需要的资源 -->
+<link rel="prefetch" href="next-page.js">
+<link rel="prefetch" href="next-page-image.jpg">
+<!--
+  - 低优先级，浏览器空闲时加载
+  - 下一页面可能用到的资源
+  - 存入缓存备用
+-->
+
+<!-- preconnect：预连接到指定域名 -->
+<link rel="preconnect" href="https://api.example.com">
+<link rel="preconnect" href="https://cdn.example.com" crossorigin>
+<!--
+  - 提前完成DNS解析、TCP连接、TLS握手
+  - 减少连接延迟
+  - 用于确定会访问的第三方域名
+-->
+
+<!-- dns-prefetch：仅DNS预解析 -->
+<link rel="dns-prefetch" href="https://api.example.com">
+<!--
+  - 比preconnect轻量
+  - 只做DNS解析
+  - 兼容性更好
+-->
+
+<!-- 使用建议 -->
+<head>
+  <!-- 预连接关键第三方服务 -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://cdn.example.com" crossorigin>
+  
+  <!-- DNS预解析 -->
+  <link rel="dns-prefetch" href="https://analytics.example.com">
+  
+  <!-- 预加载关键资源 -->
+  <link rel="preload" href="/fonts/main.woff2" as="font" crossorigin>
+  <link rel="preload" href="/css/critical.css" as="style">
+  
+  <!-- 预获取下一页资源 -->
+  <link rel="prefetch" href="/js/next-page.js">
+</head>
+```
+
+---
+
+## 总结
 
 浏览器原理和Web安全是前端面试的重点，需要深入理解：
 - **浏览器架构**：多进程模型、渲染流程
@@ -1120,5 +1782,3 @@ Client                                Server
 - **缓存策略**：强缓存、协商缓存
 - **跨域方案**：CORS、代理、JSONP
 - **安全防御**：XSS、CSRF、点击劫持、SQL注入
-
-记住：**安全无小事，每个输入都可能是攻击入口！** 🔒

@@ -4,18 +4,21 @@
 
 ## 📑 目录
 
-- [JavaScript 核心](#javascript-核心)
-  - [作用域与闭包](#作用域与闭包)
-  - [原型与继承](#原型与继承)
-  - [事件循环](#事件循环)
-  - [异步编程](#异步编程)
-  - [内存管理](#内存管理)
-- [TypeScript 核心](#typescript-核心)
-  - [类型系统](#类型系统)
-  - [高级类型](#高级类型)
-  - [工程实践](#工程实践)
-- [常见面试题](#常见面试题)
-- [实战案例](#实战案例)
+### JavaScript 核心
+1. [作用域与闭包](#作用域与闭包)
+2. [原型与继承](#原型与继承)
+3. [事件循环](#事件循环)
+4. [异步编程](#异步编程)
+5. [内存管理](#内存管理)
+
+### TypeScript 核心
+6. [类型系统](#类型系统)
+7. [高级类型](#高级类型)
+8. [工程实践](#工程实践)
+
+### 自查与实战
+9. [面试题自查](#面试题自查)
+10. [实战案例](#实战案例)
 
 ---
 
@@ -1457,7 +1460,299 @@ function parseUserWithZod(data: unknown): User {
 
 ---
 
-## 常见面试题
+## 面试题自查
+
+### Q1: 闭包是什么？有哪些应用场景？
+
+**答案**：
+**定义**：闭包是指函数能够访问其外部作用域的变量，即使外部函数已经返回。
+
+**核心原理**：
+- 函数是一等公民，可以作为返回值
+- 内部函数保持对外部作用域的引用（作用域链）
+- 外部函数的执行上下文不会被销毁
+
+**应用场景**：
+1. **数据封装/私有变量**：模拟私有成员
+2. **柯里化**：参数复用
+3. **记忆化**：缓存计算结果
+4. **模块模式**：IIFE + 闭包
+
+**陷阱**：循环中的闭包（var变量共享）、内存泄漏（大对象引用）
+
+---
+
+### Q2: 事件循环的执行顺序是什么？
+
+**答案**：
+1. 执行同步代码（调用栈）
+2. 执行**所有微任务**（Promise.then、queueMicrotask）
+3. 执行**一个宏任务**（setTimeout、setInterval、I/O）
+4. 执行**所有微任务**
+5. 渲染（如果需要）
+6. 重复步骤3
+
+**关键点**：
+- 微任务优先级高于宏任务
+- 一轮循环只执行一个宏任务
+- 微任务过多会阻塞渲染
+
+---
+
+### Q3: Promise有哪些静态方法？各自的用途？
+
+**答案**：
+
+| 方法 | 描述 | 返回时机 |
+|------|------|----------|
+| `Promise.all` | 全部成功才成功 | 所有成功/第一个失败 |
+| `Promise.allSettled` | 等待全部完成 | 所有完成（无论成功失败） |
+| `Promise.race` | 第一个完成的结果 | 第一个完成（成功或失败） |
+| `Promise.any` | 第一个成功的结果 | 第一个成功/全部失败 |
+| `Promise.resolve` | 创建已完成的Promise | 立即 |
+| `Promise.reject` | 创建已拒绝的Promise | 立即 |
+
+---
+
+### Q4: this的绑定规则有哪些？优先级顺序？
+
+**答案**：
+**四种绑定规则**（优先级从高到低）：
+
+1. **new绑定**：`new Foo()` → this指向新创建的对象
+2. **显式绑定**：`call/apply/bind` → this指向指定对象
+3. **隐式绑定**：`obj.foo()` → this指向调用对象
+4. **默认绑定**：`foo()` → 非严格模式指向全局，严格模式undefined
+
+**箭头函数特殊**：
+- 没有自己的this，继承外层作用域
+- 无法通过call/apply/bind改变
+
+---
+
+### Q5: 原型链的查找机制是什么？
+
+**答案**：
+当访问对象的属性时，JavaScript会：
+1. 在对象自身查找
+2. 在`__proto__`指向的原型对象查找
+3. 沿原型链向上查找，直到`Object.prototype`
+4. 如果到达`null`还未找到，返回`undefined`
+
+**核心关系**：
+```javascript
+instance.__proto__ === Constructor.prototype
+Constructor.prototype.__proto__ === Object.prototype
+Object.prototype.__proto__ === null
+```
+
+---
+
+### Q6: ES6 Class继承与ES5继承有什么区别？
+
+**答案**：
+
+| 特性 | ES5（组合继承） | ES6 Class |
+|------|----------------|-----------|
+| 语法 | 函数+原型链 | class/extends |
+| super调用 | Parent.call(this) | super() |
+| 静态方法继承 | 需手动处理 | 自动继承 |
+| 原型链设置 | Object.create | 内部处理 |
+| 可读性 | 差 | 好 |
+
+**ES6本质**：仍然是基于原型链的继承，只是语法糖。
+
+---
+
+### Q7: async/await与Promise有什么区别？
+
+**答案**：
+`async/await`是Promise的语法糖，让异步代码看起来像同步。
+
+| 特性 | Promise | async/await |
+|------|---------|-------------|
+| 语法 | 链式调用(.then) | 顺序写法 |
+| 错误处理 | .catch() | try/catch |
+| 可读性 | 嵌套较深时差 | 更直观 |
+| 调试 | 堆栈不连续 | 堆栈连续 |
+
+**注意**：async函数返回Promise，await只能在async函数内使用。
+
+---
+
+### Q8: TypeScript的unknown和any有什么区别？
+
+**答案**：
+
+| 特性 | any | unknown |
+|------|-----|---------|
+| 类型检查 | 完全绕过 | 需要类型收窄 |
+| 赋值 | 可以赋给任何类型 | 只能赋给unknown和any |
+| 操作 | 可以进行任何操作 | 需要类型守卫后才能操作 |
+| 安全性 | 低 | 高 |
+
+**建议**：优先使用`unknown`，配合类型守卫使用。
+
+---
+
+### Q9: TypeScript的泛型约束怎么使用？
+
+**答案**：
+使用`extends`关键字约束泛型：
+
+```typescript
+// 约束T必须有length属性
+function logLength<T extends { length: number }>(arg: T): void {
+  console.log(arg.length);
+}
+
+// 约束K必须是T的键
+function getProperty<T, K extends keyof T>(obj: T, key: K): T[K] {
+  return obj[key];
+}
+```
+
+**常用约束**：
+- `T extends object`：必须是对象
+- `T extends U ? X : Y`：条件约束
+- `keyof T`：获取键的联合类型
+
+---
+
+### Q10: 常见的内存泄漏场景有哪些？如何避免？
+
+**答案**：
+
+| 场景 | 原因 | 解决方案 |
+|------|------|----------|
+| 全局变量 | 不会被GC回收 | 使用局部变量/及时清理 |
+| 闭包持有大对象 | 作用域链引用 | 只保留需要的数据 |
+| 事件监听器未移除 | 持有组件引用 | 组件销毁时removeEventListener |
+| 定时器未清理 | 持有回调引用 | clearInterval/clearTimeout |
+| DOM引用 | JS变量引用已删除的DOM | 及时置null |
+
+---
+
+### Q11: 手写防抖和节流的区别是什么？
+
+**答案**：
+
+| 特性 | 防抖(Debounce) | 节流(Throttle) |
+|------|----------------|----------------|
+| 定义 | 延迟执行，期间重新触发则重新计时 | 固定间隔执行一次 |
+| 适用场景 | 搜索输入、窗口resize | 滚动事件、按钮点击 |
+| 执行次数 | 可能只执行最后一次 | 固定频率执行 |
+
+**防抖**：搜索框输入，用户停止输入后再搜索
+**节流**：滚动加载，每隔一段时间检查一次
+
+---
+
+### Q12: TypeScript的Partial、Pick、Omit分别是什么？
+
+**答案**：
+
+```typescript
+interface User {
+  id: number;
+  name: string;
+  email: string;
+}
+
+// Partial：所有属性变可选
+type PartialUser = Partial<User>;
+// { id?: number; name?: string; email?: string; }
+
+// Pick：选取指定属性
+type UserPreview = Pick<User, 'id' | 'name'>;
+// { id: number; name: string; }
+
+// Omit：排除指定属性
+type UserWithoutId = Omit<User, 'id'>;
+// { name: string; email: string; }
+```
+
+---
+
+### Q13: 如何实现深拷贝？有哪些边界情况要处理？
+
+**答案**：
+**基本实现**：递归复制对象属性
+
+**边界情况**：
+1. **循环引用**：使用WeakMap记录已拷贝对象
+2. **特殊对象**：Date、RegExp、Map、Set需要特殊处理
+3. **Symbol属性**：使用Reflect.ownKeys获取
+4. **不可枚举属性**：使用Object.getOwnPropertyDescriptors
+
+**简单方案**（有局限）：
+```javascript
+JSON.parse(JSON.stringify(obj))
+// 问题：不支持函数、循环引用、Date变字符串
+```
+
+---
+
+### Q14: WeakMap和Map有什么区别？
+
+**答案**：
+
+| 特性 | Map | WeakMap |
+|------|-----|---------|
+| 键类型 | 任意值 | 只能是对象 |
+| 键的引用 | 强引用 | 弱引用 |
+| 可遍历 | 是 | 否 |
+| 垃圾回收 | 不会自动清理 | 键被回收时自动清理 |
+| size属性 | 有 | 无 |
+
+**使用场景**：
+- Map：通用键值存储
+- WeakMap：私有数据、缓存（避免内存泄漏）
+
+---
+
+### Q15: Promise.all和Promise.allSettled的区别？
+
+**答案**：
+
+| 特性 | Promise.all | Promise.allSettled |
+|------|-------------|-------------------|
+| 失败处理 | 一个失败就整体失败 | 等待所有完成 |
+| 返回值 | 成功值数组 | {status, value/reason}数组 |
+| 适用场景 | 所有任务都必须成功 | 需要知道每个任务的结果 |
+
+```javascript
+// Promise.all：一个失败就进入catch
+Promise.all([p1, p2, p3]).catch(err => ...);
+
+// Promise.allSettled：返回所有结果
+const results = await Promise.allSettled([p1, p2, p3]);
+results.forEach(r => {
+  if (r.status === 'fulfilled') console.log(r.value);
+  else console.log(r.reason);
+});
+```
+
+---
+
+### Q16: 如何判断一个变量的类型？
+
+**答案**：
+
+| 方法 | 适用范围 | 示例 |
+|------|----------|------|
+| typeof | 基本类型+函数 | `typeof 'str' === 'string'` |
+| instanceof | 引用类型 | `[] instanceof Array === true` |
+| Object.prototype.toString | 所有类型 | `Object.prototype.toString.call([]) === '[object Array]'` |
+| Array.isArray | 数组 | `Array.isArray([]) === true` |
+
+**typeof的局限**：
+```javascript
+typeof null === 'object'  // 历史遗留bug
+typeof [] === 'object'    // 无法区分数组
+```
+
+---
 
 ### 必背手写题
 
@@ -1767,6 +2062,4 @@ JavaScript 和 TypeScript 是前端开发的基石，面试中：
 - **基础扎实**：闭包、原型、事件循环要讲清原理
 - **手写题必备**：Promise、防抖节流、深拷贝必须熟练
 - **TypeScript 加分**：类型体操、泛型、工具类型能体现工程能力
-- **结合业务**：用金融/游戏场景的例子，展示你的实战经验
-
-面试官最看重的是：**你是否理解底层原理，能否解决实际问题**。💪
+- **结合业务**：用金融/游戏场景的例子展示实战经验

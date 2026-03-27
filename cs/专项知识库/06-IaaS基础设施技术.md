@@ -1,43 +1,46 @@
-# IaaS基础设施技术 - 完整版
+# IaaS基础设施技术
 
 ---
 
-## 📑 完整目录
+## 📑 目录
 
-### Part 1: 虚拟化技术
+### Part 1：虚拟化技术
 1. [虚拟化技术概述](#1-虚拟化技术概述)
 2. [KVM架构与原理](#2-kvm架构与原理)
 3. [QEMU与设备模拟](#3-qemu与设备模拟)
 4. [libvirt管理框架](#4-libvirt管理框架)
 5. [虚拟机镜像格式](#5-虚拟机镜像格式)
 
-### Part 2: 虚拟机网络
+### Part 2：虚拟机网络
 6. [虚拟机网络模式](#1-虚拟机网络模式)
 7. [Linux网络虚拟化组件](#2-linux网络虚拟化组件)
 8. [虚拟机网络配置实战](#3-虚拟机网络配置实战)
 9. [虚拟机迁移技术](#4-虚拟机迁移技术)
 10. [VNC远程管理](#5-vnc远程管理)
 
-### Part 3: 物理网络与虚拟化网络
+### Part 3：物理网络与虚拟化网络
 11. [物理网络基础](#1-物理网络基础)
 12. [VLAN虚拟局域网](#2-vlan虚拟局域网)
 13. [网络隧道技术](#3-网络隧道技术)
 14. [VXLAN大二层网络](#4-vxlan大二层网络)
 15. [VPC虚拟私有云](#5-vpc虚拟私有云)
 
-### Part 4: 服务器底层技术
+### Part 4：服务器底层技术
 16. [服务器管理技术](#1-服务器管理技术)
 17. [高性能网络DPDK](#2-高性能网络dpdk)
 18. [高性能存储SPDK](#3-高性能存储spdk)
 19. [RDMA远程直接内存访问](#4-rdma远程直接内存访问)
 20. [LVM逻辑卷管理](#5-lvm逻辑卷管理)
 
-### Part 5: 操作系统运维深入
+### Part 5：操作系统运维深入
 21. [Linux内核参数调优](#1-linux内核参数调优)
 22. [系统排障工具](#2-系统排障工具)
 23. [性能分析与监控](#3-性能分析与监控)
 24. [文件系统排障](#4-文件系统排障)
 25. [网络排障工具](#5-网络排障工具)
+
+### 面试题自查
+26. [面试题自查](#面试题自查)
 
 ---
 
@@ -681,8 +684,7 @@ IOPS: 73,000 (约为raw的93%)
 
 ---
 
-## 🎯 Part 1 总结
-
+## Part 1 总结
 ### 核心知识点
 1. **虚拟化类型**：全虚拟化、半虚拟化、容器虚拟化
 2. **KVM架构**：Type 1裸金属虚拟化，CPU/内存/中断虚拟化
@@ -690,7 +692,7 @@ IOPS: 73,000 (约为raw的93%)
 4. **libvirt管理**：统一API，virsh命令行工具
 5. **镜像格式**：raw（性能）vs qcow2（功能）
 
-### 面试高频问题
+### 本章自查
 1. **KVM vs QEMU vs qemu-kvm的区别？**
    - KVM：内核模块，CPU/内存虚拟化
    - QEMU：用户空间，设备模拟
@@ -1458,8 +1460,7 @@ vncviewer localhost:5901
 
 ---
 
-## 🎯 Part 2 总结
-
+## Part 2 总结
 ### 核心知识点
 1. **三种网络模式**：桥接（生产）、NAT（测试）、用户模式（开发）
 2. **TAP/veth/macvlan**：Linux网络虚拟化基础组件
@@ -1471,7 +1472,7 @@ vncviewer localhost:5901
 - 启用网卡offload（TSO/GSO/GRO）
 - 桥接模式 > NAT > 用户模式
 
-### 面试高频问题
+### 本章自查
 1. **桥接 vs NAT的区别？**
    - 桥接：VM与Host同网段，外部可直接访问
    - NAT：VM在私有网段，通过SNAT访问外网
@@ -2239,8 +2240,7 @@ tcp 6 431998 ESTABLISHED src=82.158.87.22810 dst=8.8.8.8 sport=54321 dport=443 \
 
 ---
 
-## 🎯 Part 3 总结
-
+## Part 3 总结
 ### 核心知识点
 1. **Bonding模式**：Mode 1（主备）、Mode 4（LACP）生产环境常用
 2. **VLAN**：二层隔离，4096个网络（12位）
@@ -2256,7 +2256,7 @@ tcp 6 431998 ESTABLISHED src=82.158.87.22810 dst=8.8.8.8 sport=54321 dport=443 \
 | **数据中心大二层** | VXLAN | 支持1600万网络 |
 | **云平台网络隔离** | VPC (VXLAN + Namespace) | 完全隔离 |
 
-### 面试高频问题
+### 本章自查
 1. **VLAN vs VXLAN？**
    - VLAN：4096个（12位），二层隔离
    - VXLAN：1600万（24位），支持大二层
@@ -3147,8 +3147,7 @@ lvconvert --type cache --cachepool vg_ssd/lv_cache vg_hdd/lv_hdd
 
 ---
 
-## 🎯 Part 4 总结
-
+## Part 4 总结
 ### 核心知识点
 1. **BMC/IPMI**：带外管理，独立于操作系统
 2. **DPDK**：用户空间网络，性能提升10倍
@@ -3164,7 +3163,7 @@ lvconvert --type cache --cachepool vg_ssd/lv_cache vg_hdd/lv_hdd
 | **存储** | Kernel块设备 | SPDK | 60%（450K -> 720K IOPS） |
 | **RDMA** | TCP/IP | RoCE | 延迟降低90%（10μs -> 1μs） |
 
-### 面试高频问题
+### 本章自查
 1. **BMC vs BIOS？**
    - BMC：独立芯片，带外管理，服务器关机也能运行
    - BIOS：固件，启动时配置硬件
@@ -4142,8 +4141,7 @@ eth0   1500   0 12345678      0      0      0  23456789      0      0      0 BMR
 
 ---
 
-## 🎯 Part 5 总结 & 整体总结
-
+## Part 5 总结 & 整体总结
 ### Part 5 核心知识点
 1. **内核参数调优**：TCP/内存/文件系统/CPU参数
 2. **系统排障工具**：mcelog/fsck/ethtool/smartctl
@@ -4199,8 +4197,7 @@ Part 5: 操作系统运维深入
 | **底层技术** | ⭐⭐⭐⭐⭐ | 系统架构师/性能优化专家 |
 | **运维** | ⭐⭐⭐⭐⭐ | SRE/Linux运维专家 |
 
-### 面试高频问题汇总
-
+### 全文自查提纲
 **虚拟化**：
 1. KVM vs Xen vs VMware？
 2. qcow2写时复制原理？
@@ -4263,6 +4260,428 @@ tcpdump -i eth0 port 80
 
 ---
 
-**🎉 IaaS基础设施技术全系列完成！**
+---
 
-这是一份完整的、生产级的IaaS技术资料，涵盖了从虚拟化到网络、从服务器底层到操作系统运维的全方位知识，适合云平台开发、SRE、系统架构师等岗位学习和参考。
+## 面试题自查
+
+### Q1: KVM、QEMU、qemu-kvm三者的关系是什么？
+
+**答案**：
+- **KVM**：Linux内核模块（kvm.ko），利用CPU的硬件虚拟化扩展（Intel VT-x/AMD-V）提供CPU和内存虚拟化
+- **QEMU**：用户空间程序，模拟硬件设备（磁盘、网卡、显卡等），可独立运行但性能差（纯软件模拟）
+- **qemu-kvm**：QEMU + KVM的组合，QEMU负责设备模拟，KVM负责CPU/内存虚拟化
+
+**架构关系**：
+```
+Guest VM
+   ↕ VM Exit/Entry
+KVM（内核模块，/dev/kvm）
+   ↕ ioctl
+QEMU（用户空间，设备模拟）
+```
+
+性能对比：纯QEMU约5-10%物理机性能，qemu-kvm约95-98%。
+
+---
+
+### Q2: VM Exit为什么影响性能？如何优化？
+
+**答案**：
+**影响原因**：
+- 每次VM Exit需要保存Guest状态、切换到Host上下文，开销约1-5μs
+- 频繁Exit会显著降低虚拟机性能
+
+**常见Exit原因及优化**：
+| Exit原因 | 触发场景 | 优化方案 |
+|---------|---------|---------|
+| IO_INSTRUCTION | IO端口访问 | 使用virtio减少Exit |
+| EPT_VIOLATION | 内存访问异常 | 预分配内存、启用大页 |
+| EXTERNAL_INTERRUPT | 外部中断 | 中断亲和性绑定 |
+| PAUSE_INSTRUCTION | 自旋锁 | paravirt_spinlocks |
+
+**查看Exit统计**：
+```bash
+cat /sys/kernel/debug/kvm/exits
+```
+
+---
+
+### Q3: virtio为什么比传统设备模拟（如e1000）性能好？
+
+**答案**：
+**传统设备模拟（e1000）**：
+```
+Guest → e1000驱动 → VM Exit → QEMU模拟e1000 → Host网络栈
+每次IO都触发VM Exit，开销大
+```
+
+**virtio半虚拟化**：
+```
+Guest → virtio前端驱动 → virtio环形缓冲区 → virtio后端 → Host网络栈
+批量处理，减少VM Exit
+```
+
+**关键优化**：
+1. **Vring环形队列**：批量传输，减少上下文切换
+2. **vhost内核模块**：数据路径不经过QEMU，直接在内核处理
+3. **多队列（Multi-queue）**：利用多CPU并行处理
+
+**性能对比**（网络）：
+- e1000：~1 Gbps
+- virtio-net：~8-9 Gbps（接近物理网卡）
+
+---
+
+### Q4: qcow2镜像格式的写时复制（COW）原理是什么？有什么应用场景？
+
+**答案**：
+**COW原理**：
+- qcow2支持backing file（基础镜像）
+- 新创建的镜像只存储与基础镜像的差异
+- 读取时：先查当前镜像，未找到则读backing file
+- 写入时：只写入当前镜像，不修改backing file
+
+```bash
+# 创建基于base.qcow2的差异镜像
+qemu-img create -f qcow2 -b base.qcow2 vm1.qcow2
+```
+
+**应用场景**：
+1. **快速创建虚拟机**：多个VM共享一个base镜像，每个只存储差异
+2. **快照**：创建快照时，原镜像变为backing file
+3. **节省存储空间**：100个VM可共享一个30GB的系统镜像
+
+**性能影响**：链式backing file会影响读性能，生产环境建议定期合并。
+
+---
+
+### Q5: 虚拟机热迁移的原理是什么？如何保证业务不中断？
+
+**答案**：
+**热迁移三阶段**：
+
+1. **预复制阶段（Pre-copy）**：
+   - VM继续运行，后台传输内存到目标Host
+   - 同时记录脏页（被修改的内存页）
+
+2. **迭代复制阶段**：
+   - 反复传输脏页，直到脏页速度小于传输速度
+   - VM运行可能变慢（内存带宽被占用）
+
+3. **Stop-and-Copy阶段**：
+   - 暂停VM（黑障期，通常<1秒）
+   - 传输剩余脏页和CPU状态
+   - 在目标Host启动VM
+
+**前提条件**：
+- 共享存储（NFS/Ceph）或块迁移
+- 相同CPU架构
+- 网络互通
+
+**黑障时间优化**：
+```bash
+virsh migrate-setmaxdowntime vm1 500  # 最大500ms
+virsh migrate --live --auto-converge vm1 qemu+ssh://host2/system
+```
+
+---
+
+### Q6: 桥接模式和NAT模式的区别是什么？如何选择？
+
+**答案**：
+| 特性 | 桥接（Bridge） | NAT |
+|-----|--------------|-----|
+| **网络地址** | 与Host同网段 | 私有网段 |
+| **外部访问VM** | 直接访问 | 需要端口转发 |
+| **IP消耗** | 占用公网/内网IP | 不占用 |
+| **性能** | 最佳 | 略低（地址转换） |
+| **适用场景** | 生产环境 | 开发测试 |
+
+**选择建议**：
+- 需要外部直接访问VM → 桥接
+- IP紧张、隔离需求 → NAT
+- 简单测试 → 用户模式（无需root）
+
+---
+
+### Q7: VLAN和VXLAN的区别是什么？为什么需要VXLAN？
+
+**答案**：
+| 特性 | VLAN | VXLAN |
+|-----|------|-------|
+| **网络数量** | 4096（12位ID） | 1600万（24位VNI） |
+| **工作层次** | 二层（L2） | 三层封装二层 |
+| **封装开销** | 4字节 | 50字节（UDP+VXLAN头） |
+| **跨数据中心** | 困难 | 支持 |
+
+**为什么需要VXLAN**：
+1. **规模限制**：云平台租户多，4096个VLAN不够
+2. **虚拟机迁移**：需要大二层网络，VLAN跨机房困难
+3. **隔离需求**：多租户环境需要更多隔离网络
+
+**VXLAN封装**：
+```
+原始帧 → UDP(4789) → VXLAN头(VNI) → 外层IP → 外层MAC
+```
+
+---
+
+### Q8: DPDK为什么能达到10倍于内核网络栈的性能？
+
+**答案**：
+**性能瓶颈分析（内核网络栈）**：
+1. 中断频繁：每个包触发硬中断+软中断
+2. 上下文切换：用户态/内核态切换开销
+3. 内存拷贝：数据从网卡→内核缓冲区→用户空间
+
+**DPDK优化手段**：
+| 优化 | 机制 | 收益 |
+|-----|------|------|
+| **轮询替代中断** | PMD（Poll Mode Driver） | 消除中断开销 |
+| **用户空间驱动** | UIO/VFIO绕过内核 | 消除上下文切换 |
+| **大页内存** | Hugepages | 减少TLB miss |
+| **CPU亲和性** | 专用核心 | 减少缓存miss |
+| **零拷贝** | DMA直接到用户空间 | 消除内存拷贝 |
+
+**性能数据**：
+- 内核网络栈：~1.5 Mpps（64字节小包）
+- DPDK：~14.88 Mpps（接近10GbE线速）
+
+---
+
+### Q9: RDMA的核心优势是什么？适用于哪些场景？
+
+**答案**：
+**核心优势**：
+1. **零拷贝（Zero-Copy）**：数据直接从网卡DMA到应用内存
+2. **零CPU（Kernel Bypass）**：绕过操作系统内核
+3. **低延迟**：端到端延迟<1μs（TCP约10-20μs）
+
+**三种技术**：
+| 技术 | 说明 | 成本 |
+|-----|------|-----|
+| InfiniBand | 专用协议，性能最高 | 最高 |
+| RoCE v2 | RDMA over Ethernet | 中等 |
+| iWARP | RDMA over TCP | 最低 |
+
+**适用场景**：
+- **高频交易**：延迟敏感
+- **分布式存储**：NVMe over Fabrics
+- **HPC**：MPI通信
+- **机器学习**：分布式训练梯度同步
+
+---
+
+### Q10: LVM的核心概念是什么？如何实现在线扩容？
+
+**答案**：
+**核心概念**：
+```
+PV（Physical Volume） → 物理卷（磁盘/分区）
+    ↓
+VG（Volume Group） → 卷组（PV的集合）
+    ↓
+LV（Logical Volume） → 逻辑卷（从VG分配）
+```
+
+**在线扩容步骤**：
+```bash
+# 1. 扩展VG（如果需要新磁盘）
+pvcreate /dev/sdc
+vgextend vg1 /dev/sdc
+
+# 2. 扩展LV
+lvextend -L +50G /dev/vg1/lv_data
+
+# 3. 扩展文件系统（在线）
+resize2fs /dev/vg1/lv_data  # ext4
+xfs_growfs /mnt/data        # xfs
+```
+
+**优势**：灵活的存储管理，支持快照、在线扩容，比分区更易管理。
+
+---
+
+### Q11: BMC/IPMI的作用是什么？生产环境如何保证安全？
+
+**答案**：
+**BMC作用**：
+- 独立于操作系统的带外管理芯片
+- 即使服务器关机也能远程管理
+
+**核心功能**：
+| 功能 | 说明 |
+|-----|------|
+| 远程电源 | 开机/关机/重启 |
+| 传感器监控 | 温度/风扇/电压 |
+| KVM over IP | 远程图形界面 |
+| 虚拟媒体 | 挂载ISO安装系统 |
+| 日志（SEL） | 硬件事件记录 |
+
+**安全最佳实践**：
+1. **网络隔离**：带外网络与业务网络物理隔离
+2. **修改默认密码**：ipmitool user set password 2 StrongPass
+3. **IP白名单**：限制BMC访问来源
+4. **禁用不必要服务**：如SNMP、Telnet
+5. **定期更新固件**：修复安全漏洞
+
+---
+
+### Q12: 如何排查Linux系统iowait高的问题？
+
+**答案**：
+**排查流程**：
+
+```bash
+# 1. 确认iowait高
+top
+# 看%wa列，>20%表示IO瓶颈
+
+# 2. 找出哪个磁盘繁忙
+iostat -x 1
+# 看%util列，>80%表示瓶颈
+
+# 3. 找出哪些进程在做IO
+iotop -o
+# -o只显示有IO的进程
+
+# 4. 分析IO模式
+pidstat -d 1
+# 看读写KB/s
+
+# 5. 查看进程打开的文件
+lsof -p <pid>
+
+# 6. 查看文件系统状态
+cat /proc/meminfo | grep -i dirty
+# Dirty页多说明写入积压
+```
+
+**常见原因及解决**：
+| 原因 | 现象 | 解决方案 |
+|-----|------|---------|
+| 日志写入过多 | 某进程写入量大 | 调整日志级别/异步写入 |
+| 数据库查询 | MySQL进程IO高 | 优化SQL/增加索引/增加内存 |
+| Swap | si/so不为0 | 增加物理内存 |
+| 磁盘性能差 | await高 | 更换SSD |
+
+---
+
+### Q13: TCP BBR拥塞控制算法相比Cubic有什么优势？
+
+**答案**：
+**Cubic（默认）**：
+- 基于丢包的拥塞控制
+- 丢包后才降低发送速率
+- 在高延迟/高丢包网络表现差
+
+**BBR（Bottleneck Bandwidth and RTT）**：
+- 基于带宽和RTT的模型
+- 主动探测瓶颈带宽
+- 不依赖丢包信号
+
+**性能对比**（100ms RTT，1%丢包）：
+- Cubic：~1.8 Gbps
+- BBR：~7.1 Gbps（4倍提升）
+
+**启用BBR**：
+```bash
+# 需要内核4.9+
+echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+sysctl -p
+```
+
+---
+
+### Q14: df和du显示的空间不一致，可能是什么原因？如何排查？
+
+**答案**：
+**常见原因**：文件被删除但进程仍持有文件句柄
+
+```bash
+# 场景
+rm /var/log/huge.log  # 删除大文件
+df -h                  # 磁盘空间未释放
+du -sh /var           # 显示空间很小
+```
+
+**排查步骤**：
+```bash
+# 1. 查找被删除但仍占用的文件
+lsof | grep deleted
+# nginx 1234 root 5w REG 8,1 10737418240 /var/log/nginx/access.log (deleted)
+
+# 2. 解决方法
+# 方法1：重启进程
+systemctl restart nginx
+
+# 方法2：清空文件描述符（不重启）
+echo "" > /proc/1234/fd/5
+```
+
+**预防**：使用logrotate + copytruncate或postrotate重载进程。
+
+---
+
+### Q15: ext4文件系统误删除大文件后，如何尝试恢复？
+
+**答案**：
+**关键点**：大文件（extent深度≥1）删除后，extent索引的物理块号不会被清除。
+
+**恢复步骤**：
+```bash
+# 1. 立即卸载或remount只读（防止覆盖）
+mount -o remount,ro /data
+
+# 2. 找到删除文件的inode
+debugfs -R "ls -d /data" /dev/sda1
+# <12347> deleted_file.dat
+
+# 3. 查看inode信息
+debugfs -R "stat <12347>" /dev/sda1
+# 查看i_block字段中的extent索引
+
+# 4. 定位数据块
+debugfs -R "imap <12347>" /dev/sda1
+# 从extent索引找到物理块号
+
+# 5. 使用dd恢复
+dd if=/dev/sda1 of=/tmp/recovered bs=4096 skip=<物理块号> count=<块数>
+```
+
+**可恢复性**：
+| 文件类型 | 可恢复性 | 原因 |
+|---------|---------|------|
+| 大文件（>几MB） | 高 | extent索引保留 |
+| 小文件 | 低 | extent信息被清零 |
+| 目录/符号链接 | 不可恢复 | 信息完全清除 |
+
+---
+
+### Q16: Security Group和Network ACL的区别是什么？
+
+**答案**：
+| 特性 | Security Group | Network ACL |
+|-----|---------------|-------------|
+| **作用范围** | VM/ENI级别 | Subnet级别 |
+| **状态** | 有状态（自动允许返回流量） | 无状态（需要显式配置） |
+| **规则类型** | 只有Allow | Allow + Deny |
+| **规则顺序** | 全部评估 | 按序号评估 |
+| **默认行为** | 拒绝所有入，允许所有出 | 允许所有 |
+
+**使用场景**：
+- Security Group：精细化控制单个VM
+- Network ACL：Subnet级别粗粒度控制
+
+**示例**：
+```bash
+# Security Group（有状态）
+# 只需允许入80端口，返回流量自动允许
+iptables -A INPUT -p tcp --dport 80 -j ACCEPT
+
+# Network ACL（无状态）
+# 需要同时允许入80和出临时端口
+iptables -A INPUT -p tcp --dport 80 -j ACCEPT
+iptables -A OUTPUT -p tcp --sport 80 -j ACCEPT
+```

@@ -4,17 +4,24 @@
 
 ## 📑 目录
 
+### 基础与框架
 1. [Node.js基础](#1-nodejs基础)
 2. [Express框架](#2-express框架)
 3. [Koa框架](#3-koa框架)
 4. [中间件原理](#4-中间件原理)
+
+### 服务能力
 5. [数据库集成](#5-数据库集成)
 6. [身份认证](#6-身份认证)
 7. [文件上传](#7-文件上传)
 8. [WebSocket实时通信](#8-websocket实时通信)
+
+### 工程实践与自查
 9. [性能优化](#9-性能优化)
-10. [常见面试题](#10-常见面试题)
-11. [实战案例](#11-实战案例)
+10. [进程管理与部署](#10-进程管理与部署)
+11. [Stream与Buffer](#11-stream与buffer)
+12. [面试题自查](#12-面试题自查)
+13. [实战案例](#13-实战案例)
 
 ---
 
@@ -786,42 +793,971 @@ app.use(compression());
 
 ---
 
-## 10. 常见面试题
+## 10. 进程管理与部署
 
-### Q1: Node.js为什么是单线程？
+### 10.1 PM2进程管理
 
-**答案**：
-- JavaScript设计为单线程（避免DOM操作冲突）
-- 单线程 + 异步I/O = 高并发
-- 通过Cluster可以利用多核
+```javascript
+// ecosystem.config.js
+module.exports = {
+  apps: [{
+    name: 'my-app',
+    script: './app.js',
+    instances: 'max',        // 根据CPU核心数创建实例
+    exec_mode: 'cluster',    // 集群模式
+    watch: true,             // 监听文件变化
+    max_memory_restart: '1G', // 内存超过1G重启
+    env: {
+      NODE_ENV: 'development',
+    },
+    env_production: {
+      NODE_ENV: 'production',
+    },
+  }],
+};
 
-### Q2: Event Loop执行顺序？
+// 常用命令
+// pm2 start ecosystem.config.js
+// pm2 start app.js -i max      # 集群模式启动
+// pm2 list                     # 查看所有进程
+// pm2 logs                     # 查看日志
+// pm2 monit                    # 监控面板
+// pm2 restart all              # 重启所有
+// pm2 stop all                 # 停止所有
+// pm2 delete all               # 删除所有
+```
 
-**答案**：见1.2
+### 10.2 日志处理
 
-### Q3: Express和Koa的区别？
+```javascript
+const winston = require('winston');
 
-**答案**：
-| 特性 | Express | Koa |
-|------|---------|-----|
-| **回调** | 回调函数 | async/await |
-| **中间件** | 线性执行 | 洋葱模型 |
-| **错误处理** | try-catch | 统一catch |
-| **大小** | 较大 | 更小 |
+const logger = winston.createLogger({
+  level: 'info',
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.json()
+  ),
+  transports: [
+    // 控制台输出
+    new winston.transports.Console({
+      format: winston.format.simple(),
+    }),
+    // 错误日志文件
+    new winston.transports.File({
+      filename: 'logs/error.log',
+      level: 'error',
+    }),
+    // 所有日志文件
+    new winston.transports.File({
+      filename: 'logs/combined.log',
+    }),
+  ],
+});
 
-### Q4: JWT和Session的区别？
+// 使用
+logger.info('服务器启动', { port: 3000 });
+logger.error('数据库连接失败', { error: err.message });
 
-**答案**：
-| 特性 | JWT | Session |
-|------|-----|---------|
-| **存储** | 客户端 | 服务器 |
-| **扩展性** | 好（无状态） | 差（有状态） |
-| **安全性** | 可能被窃取 | 更安全 |
-| **大小** | 较大 | 较小 |
+// Express日志中间件
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    logger.info('HTTP请求', {
+      method: req.method,
+      url: req.url,
+      status: res.statusCode,
+      duration: `${duration}ms`,
+    });
+  });
+  next();
+});
+```
+
+### 10.3 错误处理最佳实践
+
+```javascript
+// 自定义错误类
+class AppError extends Error {
+  constructor(message, statusCode) {
+    super(message);
+    this.statusCode = statusCode;
+    this.isOperational = true;  // 可预期的操作错误
+    Error.captureStackTrace(this, this.constructor);
+  }
+}
+
+// 异步错误包装器
+const catchAsync = (fn) => (req, res, next) => {
+  Promise.resolve(fn(req, res, next)).catch(next);
+};
+
+// 使用
+app.get('/api/users/:id', catchAsync(async (req, res) => {
+  const user = await User.findById(req.params.id);
+  if (!user) {
+    throw new AppError('用户不存在', 404);
+  }
+  res.json(user);
+}));
+
+// 全局错误处理中间件
+app.use((err, req, res, next) => {
+  err.statusCode = err.statusCode || 500;
+  
+  if (process.env.NODE_ENV === 'development') {
+    res.status(err.statusCode).json({
+      status: 'error',
+      error: err,
+      message: err.message,
+      stack: err.stack,
+    });
+  } else {
+    // 生产环境：只返回简洁错误信息
+    if (err.isOperational) {
+      res.status(err.statusCode).json({
+        status: 'error',
+        message: err.message,
+      });
+    } else {
+      // 未知错误
+      console.error('ERROR:', err);
+      res.status(500).json({
+        status: 'error',
+        message: '服务器内部错误',
+      });
+    }
+  }
+});
+
+// 未捕获的异常处理
+process.on('uncaughtException', (err) => {
+  console.error('未捕获的异常:', err);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (err) => {
+  console.error('未处理的Promise拒绝:', err);
+  process.exit(1);
+});
+```
 
 ---
 
-## 11. 实战案例
+## 11. Stream与Buffer
+
+### 11.1 Stream流
+
+```javascript
+const fs = require('fs');
+
+// 读取流
+const readStream = fs.createReadStream('large-file.txt', {
+  encoding: 'utf8',
+  highWaterMark: 64 * 1024,  // 64KB缓冲区
+});
+
+readStream.on('data', (chunk) => {
+  console.log('读取数据:', chunk.length);
+});
+
+readStream.on('end', () => {
+  console.log('读取完成');
+});
+
+// 写入流
+const writeStream = fs.createWriteStream('output.txt');
+writeStream.write('Hello\n');
+writeStream.write('World\n');
+writeStream.end();
+
+// 管道（Pipe）- 最常用
+const readStream = fs.createReadStream('input.txt');
+const writeStream = fs.createWriteStream('output.txt');
+readStream.pipe(writeStream);  // 自动处理背压
+
+// Express中使用流
+app.get('/download', (req, res) => {
+  const filePath = 'large-file.zip';
+  res.setHeader('Content-Disposition', 'attachment; filename=file.zip');
+  fs.createReadStream(filePath).pipe(res);
+});
+
+// 流式处理大文件
+const zlib = require('zlib');
+fs.createReadStream('input.txt')
+  .pipe(zlib.createGzip())           // 压缩
+  .pipe(fs.createWriteStream('input.txt.gz'));
+```
+
+### 11.2 Buffer操作
+
+```javascript
+// 创建Buffer
+const buf1 = Buffer.alloc(10);           // 10字节，填充0
+const buf2 = Buffer.from('Hello');       // 从字符串创建
+const buf3 = Buffer.from([1, 2, 3]);     // 从数组创建
+
+// 写入
+buf1.write('Hi');
+
+// 读取
+console.log(buf2.toString());            // 'Hello'
+console.log(buf2.toString('hex'));       // '48656c6c6f'
+
+// 拼接
+const combined = Buffer.concat([buf2, buf3]);
+
+// 比较
+buf1.equals(buf2);  // false
+buf1.compare(buf2); // -1/0/1
+
+// 切片
+const slice = buf2.slice(0, 2);  // 'He'
+
+// 场景：处理二进制数据（图片、加密等）
+const crypto = require('crypto');
+const hash = crypto.createHash('sha256');
+hash.update(Buffer.from('password'));
+console.log(hash.digest('hex'));
+```
+
+---
+
+## 12. 面试题自查
+
+### Q1: Node.js为什么是单线程？如何利用多核？
+
+**答案**：
+```javascript
+// 1. 为什么是单线程？
+// - JavaScript设计为单线程（避免DOM操作冲突）
+// - 单线程 + 异步I/O = 高并发
+// - 避免多线程的锁和上下文切换开销
+
+// 2. 如何利用多核？
+// 方法1：Cluster模块
+const cluster = require('cluster');
+const os = require('os');
+
+if (cluster.isMaster) {
+  const numCPUs = os.cpus().length;
+  for (let i = 0; i < numCPUs; i++) {
+    cluster.fork();
+  }
+} else {
+  require('./app.js');
+}
+
+// 方法2：Worker Threads（CPU密集型任务）
+const { Worker } = require('worker_threads');
+const worker = new Worker('./heavy-task.js');
+worker.on('message', (result) => console.log(result));
+
+// 方法3：PM2集群模式
+// pm2 start app.js -i max
+```
+
+### Q2: Node.js的Event Loop执行顺序？
+
+**答案**：
+```javascript
+// Node.js Event Loop的6个阶段：
+// 1. timers: setTimeout/setInterval
+// 2. pending callbacks: I/O回调
+// 3. idle, prepare: 内部使用
+// 4. poll: 等待I/O事件
+// 5. check: setImmediate
+// 6. close callbacks: close事件
+
+// 微任务在每个阶段之间执行
+// process.nextTick > Promise.then > queueMicrotask
+
+console.log('1');                          // 同步
+setTimeout(() => console.log('2'), 0);     // timers阶段
+setImmediate(() => console.log('3'));      // check阶段
+Promise.resolve().then(() => console.log('4')); // 微任务
+process.nextTick(() => console.log('5'));  // nextTick队列（最高优先级）
+console.log('6');                          // 同步
+
+// 输出：1 6 5 4 2 3
+```
+
+### Q3: Express和Koa的中间件机制有什么区别？
+
+**答案**：
+```javascript
+// Express：线性执行
+app.use((req, res, next) => {
+  console.log('1');
+  next();
+  console.log('4');  // next()后的代码不一定在后续中间件执行完后执行
+});
+app.use((req, res, next) => {
+  console.log('2');
+  next();
+  console.log('3');
+});
+
+// Koa：洋葱模型（基于async/await）
+app.use(async (ctx, next) => {
+  console.log('1');
+  await next();     // 等待后续中间件执行完
+  console.log('6'); // 一定在后续中间件执行完后执行
+});
+app.use(async (ctx, next) => {
+  console.log('2');
+  await next();
+  console.log('5');
+});
+app.use(async (ctx) => {
+  console.log('3');
+  console.log('4');
+});
+
+// Koa输出：1 2 3 4 5 6
+
+// 区别总结：
+// | 特性 | Express | Koa |
+// |------|---------|-----|
+// | 回调 | 回调函数 | async/await |
+// | 中间件 | 线性执行 | 洋葱模型 |
+// | 错误处理 | 需要传给next(err) | try-catch统一捕获 |
+```
+
+### Q4: JWT和Session的区别及选型？
+
+**答案**：
+```javascript
+// JWT特点：
+// - 无状态：Token自包含用户信息，服务器不存储
+// - 可扩展：适合分布式系统，无需共享Session
+// - 无法主动失效：除非加黑名单
+
+// Session特点：
+// - 有状态：服务器存储Session数据
+// - 可控：服务器可随时销毁Session
+// - 需要共享：分布式系统需要Redis等共享存储
+
+// 选型建议：
+// JWT适合：
+// - 分布式系统/微服务
+// - 移动端应用
+// - 第三方API认证
+
+// Session适合：
+// - 传统Web应用
+// - 需要主动踢人/强制下线
+// - 安全性要求高
+
+// 最佳实践：JWT + Redis黑名单
+const blacklist = new Set();
+app.use((req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (blacklist.has(token)) {
+    return res.status(401).json({ error: 'Token已失效' });
+  }
+  next();
+});
+```
+
+### Q5: 如何处理Node.js中的内存泄漏？
+
+**答案**：
+```javascript
+// 常见内存泄漏原因：
+// 1. 全局变量
+// 2. 闭包中的引用
+// 3. 事件监听器未移除
+// 4. 定时器未清除
+// 5. 缓存无限增长
+
+// 排查方法：
+// 1. 使用--inspect启动，Chrome DevTools分析
+// node --inspect app.js
+
+// 2. 使用heapdump生成快照
+const heapdump = require('heapdump');
+heapdump.writeSnapshot('./heap.heapsnapshot');
+
+// 3. 监控内存使用
+setInterval(() => {
+  const usage = process.memoryUsage();
+  console.log({
+    heapUsed: `${Math.round(usage.heapUsed / 1024 / 1024)}MB`,
+    heapTotal: `${Math.round(usage.heapTotal / 1024 / 1024)}MB`,
+  });
+}, 5000);
+
+// 预防措施：
+// 1. 使用WeakMap/WeakSet
+const cache = new WeakMap();
+
+// 2. 及时移除事件监听器
+const handler = () => {};
+emitter.on('event', handler);
+emitter.removeListener('event', handler);
+
+// 3. 限制缓存大小
+const LRU = require('lru-cache');
+const cache = new LRU({ max: 500 });
+```
+
+### Q6: Node.js如何处理大文件上传？
+
+**答案**：
+```javascript
+// 方法1：流式处理（避免内存占用）
+const busboy = require('busboy');
+
+app.post('/upload', (req, res) => {
+  const bb = busboy({ headers: req.headers });
+  
+  bb.on('file', (name, file, info) => {
+    const writeStream = fs.createWriteStream(`./uploads/${info.filename}`);
+    file.pipe(writeStream);
+    
+    file.on('end', () => {
+      console.log('文件上传完成');
+    });
+  });
+  
+  req.pipe(bb);
+});
+
+// 方法2：分片上传
+// 前端分片
+async function uploadChunks(file) {
+  const chunkSize = 5 * 1024 * 1024; // 5MB
+  const chunks = Math.ceil(file.size / chunkSize);
+  
+  for (let i = 0; i < chunks; i++) {
+    const chunk = file.slice(i * chunkSize, (i + 1) * chunkSize);
+    const formData = new FormData();
+    formData.append('chunk', chunk);
+    formData.append('index', i);
+    formData.append('total', chunks);
+    formData.append('hash', await calculateHash(file));
+    
+    await fetch('/upload/chunk', { method: 'POST', body: formData });
+  }
+}
+
+// 后端合并
+app.post('/upload/merge', async (req, res) => {
+  const { hash, total, filename } = req.body;
+  const chunkDir = `./uploads/chunks/${hash}`;
+  const chunks = await fs.readdir(chunkDir);
+  
+  chunks.sort((a, b) => parseInt(a) - parseInt(b));
+  
+  const writeStream = fs.createWriteStream(`./uploads/${filename}`);
+  for (const chunk of chunks) {
+    const chunkPath = path.join(chunkDir, chunk);
+    const readStream = fs.createReadStream(chunkPath);
+    await new Promise((resolve) => {
+      readStream.pipe(writeStream, { end: false });
+      readStream.on('end', resolve);
+    });
+  }
+  writeStream.end();
+  
+  // 清理临时文件
+  await fs.rm(chunkDir, { recursive: true });
+  res.json({ success: true });
+});
+```
+
+### Q7: 如何实现Node.js的优雅关闭（Graceful Shutdown）？
+
+**答案**：
+```javascript
+const server = app.listen(3000);
+
+async function gracefulShutdown(signal) {
+  console.log(`收到 ${signal} 信号，开始优雅关闭...`);
+  
+  // 1. 停止接收新请求
+  server.close(async () => {
+    console.log('HTTP服务器已关闭');
+    
+    // 2. 关闭数据库连接
+    await mongoose.connection.close();
+    console.log('数据库连接已关闭');
+    
+    // 3. 关闭Redis连接
+    await redisClient.quit();
+    console.log('Redis连接已关闭');
+    
+    // 4. 退出进程
+    process.exit(0);
+  });
+  
+  // 超时强制退出
+  setTimeout(() => {
+    console.error('强制退出');
+    process.exit(1);
+  }, 10000);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+```
+
+### Q8: Node.js中require的加载机制？
+
+**答案**：
+```javascript
+// require加载顺序：
+// 1. 缓存：检查是否已加载
+// 2. 内置模块：如fs、http
+// 3. 文件模块：以./、../、/开头
+// 4. node_modules：从当前目录向上查找
+
+// 文件扩展名解析顺序：
+// 1. 精确匹配
+// 2. .js
+// 3. .json
+// 4. .node（C++扩展）
+
+// 循环依赖处理：
+// a.js
+console.log('a开始');
+exports.done = false;
+const b = require('./b.js');
+console.log('在a中，b.done =', b.done);
+exports.done = true;
+console.log('a结束');
+
+// b.js
+console.log('b开始');
+exports.done = false;
+const a = require('./a.js');  // 获取a的部分导出
+console.log('在b中，a.done =', a.done);  // false
+exports.done = true;
+console.log('b结束');
+
+// 执行 require('./a.js')
+// 输出：
+// a开始
+// b开始
+// 在b中，a.done = false
+// b结束
+// 在a中，b.done = true
+// a结束
+```
+
+### Q9: 如何在Node.js中实现请求限流？
+
+**答案**：
+```javascript
+// 方法1：简单的令牌桶算法
+class RateLimiter {
+  constructor(maxTokens, refillRate) {
+    this.maxTokens = maxTokens;
+    this.tokens = maxTokens;
+    this.refillRate = refillRate;  // 每秒补充的令牌数
+    
+    setInterval(() => {
+      this.tokens = Math.min(this.maxTokens, this.tokens + this.refillRate);
+    }, 1000);
+  }
+  
+  tryConsume() {
+    if (this.tokens > 0) {
+      this.tokens--;
+      return true;
+    }
+    return false;
+  }
+}
+
+const limiter = new RateLimiter(100, 10);  // 100个令牌，每秒补充10个
+
+app.use((req, res, next) => {
+  if (limiter.tryConsume()) {
+    next();
+  } else {
+    res.status(429).json({ error: 'Too Many Requests' });
+  }
+});
+
+// 方法2：使用express-rate-limit
+const rateLimit = require('express-rate-limit');
+
+const limiter = rateLimit({
+  windowMs: 60 * 1000,  // 1分钟
+  max: 100,             // 每个IP最多100个请求
+  message: { error: '请求过于频繁，请稍后再试' },
+});
+
+app.use('/api/', limiter);
+
+// 方法3：使用Redis实现分布式限流
+async function rateLimitMiddleware(req, res, next) {
+  const key = `rate:${req.ip}`;
+  const current = await redis.incr(key);
+  
+  if (current === 1) {
+    await redis.expire(key, 60);  // 60秒过期
+  }
+  
+  if (current > 100) {
+    return res.status(429).json({ error: 'Too Many Requests' });
+  }
+  
+  next();
+}
+```
+
+### Q10: Node.js中如何实现定时任务？
+
+**答案**：
+```javascript
+// 方法1：node-cron
+const cron = require('node-cron');
+
+// 每天凌晨3点执行
+cron.schedule('0 3 * * *', async () => {
+  console.log('执行每日清理任务');
+  await cleanupExpiredData();
+});
+
+// 每小时执行
+cron.schedule('0 * * * *', () => {
+  console.log('执行每小时统计');
+});
+
+// 方法2：agenda（基于MongoDB）
+const Agenda = require('agenda');
+const agenda = new Agenda({ db: { address: 'mongodb://localhost/agenda' } });
+
+agenda.define('send email', async (job) => {
+  const { to, subject, body } = job.attrs.data;
+  await sendEmail(to, subject, body);
+});
+
+(async function() {
+  await agenda.start();
+  
+  // 立即执行
+  await agenda.now('send email', { to: 'user@example.com' });
+  
+  // 定时执行
+  await agenda.schedule('in 20 minutes', 'send email', { to: 'user@example.com' });
+  
+  // 重复执行
+  await agenda.every('1 hour', 'send email', { to: 'admin@example.com' });
+})();
+
+// 方法3：bull（基于Redis）
+const Queue = require('bull');
+const emailQueue = new Queue('email', 'redis://localhost:6379');
+
+emailQueue.process(async (job) => {
+  const { to, subject, body } = job.data;
+  await sendEmail(to, subject, body);
+});
+
+// 添加任务
+emailQueue.add({ to: 'user@example.com', subject: 'Hello' }, {
+  delay: 60000,        // 延迟1分钟
+  attempts: 3,         // 失败重试3次
+  backoff: 5000,       // 重试间隔5秒
+  repeat: { cron: '0 9 * * *' },  // 每天9点执行
+});
+```
+
+### Q11: 如何保证Node.js应用的高可用？
+
+**答案**：
+```javascript
+// 1. PM2集群模式
+// pm2 start app.js -i max --name my-app
+
+// 2. 负载均衡（Nginx）
+// upstream nodejs {
+//   server 127.0.0.1:3001;
+//   server 127.0.0.1:3002;
+//   server 127.0.0.1:3003;
+// }
+
+// 3. 健康检查端点
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    uptime: process.uptime(),
+    timestamp: Date.now(),
+  });
+});
+
+// 4. 进程守护（自动重启）
+cluster.on('exit', (worker, code, signal) => {
+  console.log(`Worker ${worker.process.pid} died`);
+  cluster.fork();  // 自动重启
+});
+
+// 5. 优雅降级
+const circuitBreaker = require('opossum');
+
+const options = {
+  timeout: 3000,     // 超时时间
+  errorThresholdPercentage: 50,  // 错误率阈值
+  resetTimeout: 30000,  // 熔断后30秒尝试恢复
+};
+
+const breaker = new circuitBreaker(asyncFunction, options);
+
+breaker.on('open', () => console.log('熔断器打开'));
+breaker.on('halfOpen', () => console.log('熔断器半开'));
+breaker.on('close', () => console.log('熔断器关闭'));
+
+app.get('/api/data', async (req, res) => {
+  try {
+    const result = await breaker.fire();
+    res.json(result);
+  } catch (err) {
+    res.json({ cached: true, data: getCachedData() });  // 降级处理
+  }
+});
+```
+
+### Q12: Node.js中Buffer和String的区别？
+
+**答案**：
+```javascript
+// String: 文本数据，UTF-16编码
+// Buffer: 二进制数据，类似数组
+
+// 内存分配
+const str = 'Hello';        // V8堆内存
+const buf = Buffer.from('Hello');  // V8堆外内存（C++层）
+
+// 编码转换
+const buf = Buffer.from('你好', 'utf8');
+console.log(buf);  // <Buffer e4 bd a0 e5 a5 bd>
+console.log(buf.toString('utf8'));  // '你好'
+console.log(buf.toString('base64'));  // '5L2g5aW9'
+
+// 性能差异
+// Buffer适合：网络通信、文件I/O、加密、图片处理
+// String适合：文本处理、JSON、模板渲染
+
+// 安全问题
+// Buffer.alloc(size): 安全，填充0
+// Buffer.allocUnsafe(size): 不安全，可能包含旧数据（更快）
+const safe = Buffer.alloc(10);        // <Buffer 00 00 00 00 00 00 00 00 00 00>
+const unsafe = Buffer.allocUnsafe(10); // 可能包含旧数据
+
+// 实际应用
+// 1. 处理二进制协议
+const header = Buffer.alloc(4);
+header.writeUInt32BE(data.length, 0);  // 写入数据长度（大端序）
+
+// 2. 文件读取
+const content = fs.readFileSync('image.png');  // 返回Buffer
+const text = fs.readFileSync('text.txt', 'utf8');  // 返回String
+```
+
+### Q13: 什么是背压（Backpressure）？如何处理？
+
+**答案**：
+```javascript
+// 背压：生产者速度 > 消费者速度，导致内存溢出
+
+// 问题示例
+const readStream = fs.createReadStream('large-file.txt');
+const writeStream = fs.createWriteStream('output.txt');
+
+// ❌ 直接写入，可能内存溢出
+readStream.on('data', (chunk) => {
+  writeStream.write(chunk);  // 写入速度可能跟不上
+});
+
+// ✅ 方法1：使用pipe（自动处理背压）
+readStream.pipe(writeStream);
+
+// ✅ 方法2：手动处理背压
+readStream.on('data', (chunk) => {
+  const canContinue = writeStream.write(chunk);
+  
+  if (!canContinue) {
+    // 暂停读取
+    readStream.pause();
+  }
+});
+
+writeStream.on('drain', () => {
+  // 缓冲区已清空，继续读取
+  readStream.resume();
+});
+
+// ✅ 方法3：使用pipeline（推荐）
+const { pipeline } = require('stream');
+
+pipeline(
+  readStream,
+  transformStream,
+  writeStream,
+  (err) => {
+    if (err) console.error('Pipeline failed:', err);
+    else console.log('Pipeline succeeded');
+  }
+);
+```
+
+### Q14: Node.js如何处理CPU密集型任务？
+
+**答案**：
+```javascript
+// Node.js主线程不适合CPU密集型任务，会阻塞事件循环
+
+// 方法1：Worker Threads
+const { Worker, isMainThread, parentPort } = require('worker_threads');
+
+if (isMainThread) {
+  // 主线程
+  const worker = new Worker(__filename);
+  worker.on('message', (result) => {
+    console.log('计算结果:', result);
+  });
+  worker.postMessage({ n: 40 });
+} else {
+  // Worker线程
+  parentPort.on('message', ({ n }) => {
+    const result = fibonacci(n);  // CPU密集型计算
+    parentPort.postMessage(result);
+  });
+}
+
+// 方法2：Child Process
+const { fork } = require('child_process');
+
+const child = fork('./heavy-task.js');
+child.send({ n: 40 });
+child.on('message', (result) => {
+  console.log('计算结果:', result);
+});
+
+// 方法3：使用线程池
+const Piscina = require('piscina');
+
+const pool = new Piscina({
+  filename: './worker.js',
+  maxThreads: 4,
+});
+
+async function main() {
+  const result = await pool.run({ n: 40 });
+  console.log(result);
+}
+
+// 方法4：使用原生addon（C++）
+// 适合需要高性能计算的场景
+```
+
+### Q15: Node.js的安全最佳实践？
+
+**答案**：
+```javascript
+// 1. 防止SQL/NoSQL注入
+// 使用参数化查询
+const [rows] = await pool.query(
+  'SELECT * FROM users WHERE id = ?',
+  [req.params.id]
+);
+
+// 2. 防止XSS
+const xss = require('xss');
+const sanitized = xss(userInput);
+
+// 3. 设置安全响应头
+const helmet = require('helmet');
+app.use(helmet());  // 设置多个安全头
+
+// 4. CORS配置
+const cors = require('cors');
+app.use(cors({
+  origin: ['https://example.com'],
+  methods: ['GET', 'POST'],
+  credentials: true,
+}));
+
+// 5. 请求大小限制
+app.use(express.json({ limit: '10kb' }));
+
+// 6. 密码加密
+const bcrypt = require('bcrypt');
+const hash = await bcrypt.hash(password, 12);
+const isMatch = await bcrypt.compare(password, hash);
+
+// 7. 敏感信息不要硬编码
+// 使用环境变量
+const secret = process.env.JWT_SECRET;
+
+// 8. 定期更新依赖
+// npm audit
+// npm audit fix
+
+// 9. 日志脱敏
+const maskSensitiveData = (data) => {
+  return {
+    ...data,
+    password: '***',
+    token: '***',
+    creditCard: data.creditCard?.slice(-4).padStart(16, '*'),
+  };
+};
+```
+
+### Q16: CommonJS和ES Module的区别？
+
+**答案**：
+```javascript
+// CommonJS
+// - 同步加载
+// - 运行时执行
+// - 值拷贝
+// - this指向module.exports
+
+const fs = require('fs');
+module.exports = { foo: 'bar' };
+exports.baz = 'qux';
+
+// ES Module
+// - 异步加载
+// - 编译时静态分析
+// - 值引用（实时绑定）
+// - this是undefined
+
+import fs from 'fs';
+import { readFile } from 'fs';
+export const foo = 'bar';
+export default { baz: 'qux' };
+
+// 互操作
+// ES Module导入CommonJS
+import cjs from './cjs-module.js';  // 获取module.exports
+import { named } from './cjs-module.js';  // 可能不支持
+
+// CommonJS导入ES Module（需要动态import）
+const esm = await import('./es-module.mjs');
+
+// 主要区别
+// | 特性 | CommonJS | ES Module |
+// |------|----------|-----------|
+// | 加载时机 | 运行时 | 编译时 |
+// | 加载方式 | 同步 | 异步 |
+// | 值传递 | 值拷贝 | 值引用 |
+// | 顶层this | module.exports | undefined |
+// | 动态导入 | require() | import() |
+// | Tree Shaking | 不支持 | 支持 |
+```
+
+---
+
+## 13. 实战案例
 
 ### 案例：RESTful API（用户管理）
 
@@ -916,16 +1852,15 @@ app.listen(3000, () => {
 ## 总结
 
 Node.js后端核心：
-1. **Event Loop**：异步I/O、事件驱动
+1. **Event Loop**：异步I/O、事件驱动、微任务与宏任务
 2. **框架**：Express（简单）、Koa（洋葱模型）
 3. **数据库**：MySQL、MongoDB、Redis
-4. **认证**：JWT、Session
+4. **认证**：JWT（无状态）、Session（有状态）
 5. **实时通信**：WebSocket、Socket.io
-6. **性能优化**：Cluster、缓存、压缩
+6. **性能优化**：Cluster、缓存、压缩、限流
+7. **进程管理**：PM2、优雅关闭、高可用
+8. **Stream与Buffer**：流式处理、背压、二进制数据
+9. **安全实践**：SQL注入防护、XSS、CORS、helmet
 
-面试时展示**对Node.js异步机制的理解**和**后端开发经验**！🚀
 
 ---
-
-**文件状态**：✅ 已完成（约650行）  
-**下一步**：继续创建 Nginx与Web服务器.md...
