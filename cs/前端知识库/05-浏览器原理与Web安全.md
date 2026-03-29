@@ -6,7 +6,7 @@
 
 ### 浏览器原理
 1. [浏览器架构](#浏览器架构)（多进程架构、渲染进程）
-2. [页面渲染原理](#页面渲染原理)（关键渲染路径、重排与重绘、合成层优化）
+2. [页面渲染原理](#页面渲染原理)（关键渲染路径、重排与重绘、**文本测量与零 DOM 排版**、合成层优化）
 3. [浏览器缓存](#浏览器缓存)（强缓存、协商缓存、缓存策略）
 
 ### 网络与跨域
@@ -272,6 +272,229 @@ element.style.visibility = 'hidden';
 // ✅ 优化：使用 opacity（只触发合成）
 element.style.opacity = '0';
 ```
+
+**5. 零 DOM 文本测量——Canvas measureText 替代方案**
+
+> 这是 Reflow 优化的深层延伸。详见下方「文本测量与零 DOM 排版」小节。
+
+---
+
+### 文本测量与零 DOM 排版
+
+> 本节聚焦一个被长期忽视的性能问题：**文本尺寸测量是前端 Reflow 的最高频触发场景之一**，以及业界正在探索的「零 DOM 排版」解决思路。
+
+#### 问题本质：为什么文本测量是性能黑洞？
+
+在虚拟列表、富文本编辑器、Canvas 渲染、SSR 等场景中，我们频繁需要回答一个问题：**一段文字在给定宽度下会占多少高度、折成几行？**
+
+传统方案几乎只有一种——**把文字塞进隐藏 DOM 节点，然后读 `offsetHeight` / `getBoundingClientRect()`**：
+
+```javascript
+// 传统方案：通过 DOM 测量文本高度
+function measureTextHeight(text, width, font) {
+  const el = document.createElement('div');
+  el.style.cssText = `position:absolute; visibility:hidden; width:${width}px; font:${font}`;
+  el.textContent = text;
+  document.body.appendChild(el);
+  const height = el.offsetHeight;  // ← 触发一次完整的 Layout Reflow
+  document.body.removeChild(el);
+  return height;
+}
+
+// 在虚拟列表中使用：假设有 10,000 个条目
+// 每个条目都要调用一次 → 10,000 次 Reflow
+items.forEach(item => {
+  item.height = measureTextHeight(item.text, containerWidth, '14px sans-serif');
+});
+```
+
+**这里的性能代价**：
+
+```
+一次 Reflow 的链路：
+  DOM 修改 → Style 计算 → Layout Tree 构建 → 位置/尺寸计算 → 返回结果
+  
+问题：
+1. 每次 offsetHeight 读取都强制浏览器同步完成整条链路（~0.5-2ms/次）
+2. 10,000 条目 × 2ms = 20 秒 的 Layout Thrashing
+3. 这期间主线程完全阻塞，页面卡死
+```
+
+更糟糕的是，当容器宽度改变（窗口 resize、侧边栏展开等），**所有文本高度缓存全部失效**，需要重新测量。
+
+这个问题在以下场景中尤为突出：
+
+| 场景 | 问题 |
+|:---|:---|
+| **虚拟列表/虚拟滚动** | 必须预知每行高度才能定位，导致只能用固定行高（`FixedSizeList`） |
+| **富文本编辑器** | 光标定位、选区计算、分页预览都依赖精确的文本尺寸 |
+| **Canvas/SVG 渲染** | Canvas `fillText()` 没有自动换行，需要手动折行再绘制 |
+| **CLS 优化** | 新内容加载前无法预知高度，导致页面布局偏移 |
+| **SSR/服务端** | 服务端根本没有 DOM，无法测量 |
+
+#### 解题思路：Canvas measureText + 两阶段缓存架构
+
+**核心洞察**：浏览器的 `Canvas2D.measureText()` 可以**直接访问字体引擎测量文字宽度，而不触发任何 DOM 布局流程**。
+
+```javascript
+// Canvas measureText：零 Reflow 的文本宽度测量
+const ctx = document.createElement('canvas').getContext('2d');
+ctx.font = '14px sans-serif';
+
+const metrics = ctx.measureText('Hello World');
+console.log(metrics.width);  // 直接返回宽度，不触发 Layout
+
+// 对比：
+// DOM offsetWidth → 需要 Style → Layout → 返回（~1ms）
+// Canvas measureText → 直接调字体引擎（~0.001ms）→ 快 1000 倍
+```
+
+基于这个洞察，业界出现了「**两阶段分离架构**」的解决方案（如 [Pretext](https://github.com/chenglou/pretext)）：
+
+```
+两阶段分离架构：
+┌────────────────────────────────┐     ┌─────────────────────────────────┐
+│  Phase 1: prepare() — 预处理   │     │  Phase 2: layout() — 纯数学计算  │
+│                                │     │                                 │
+│  ① 文本分段                    │     │  遍历缓存的段宽度                │
+│     Intl.Segmenter 按字素拆分  │ ──→ │  贪婪行折断（宽度累加 > 容器宽？ │
+│  ② Canvas measureText 逐段测宽 │ 缓存 │      → 换行）                   │
+│  ③ 标点/空白/Emoji 预处理      │     │  输出：总高度、行数、每行内容    │
+│  ④ BiDi 双向文本检测           │     │                                 │
+│                                │     │  零 DOM 操作                    │
+│  ~19ms（一次性，可缓存复用）    │     │  ~0.09ms/次（纯算术）           │
+└────────────────────────────────┘     └─────────────────────────────────┘
+```
+
+**阶段一 `prepare()`**——一次性的"脏活"：
+
+```javascript
+// 伪代码：prepare 阶段的核心逻辑
+function prepare(text, font) {
+  const ctx = getCanvasContext();
+  ctx.font = font;
+  
+  // 1. 用 Intl.Segmenter 按字素/单词边界分段（处理 Emoji、CJK 等）
+  const segmenter = new Intl.Segmenter('en', { granularity: 'grapheme' });
+  const segments = [...segmenter.segment(text)];
+  
+  // 2. 逐段调用 Canvas measureText，缓存每段宽度
+  const widths = segments.map(seg => ctx.measureText(seg.segment).width);
+  
+  // 3. 预处理：标点不允许在行首（粘附规则）、空格可在行末悬挂等
+  // 4. BiDi 双向文本处理（如中英混排、阿拉伯语）
+  
+  return { segments, widths, metadata };  // 缓存起来
+}
+```
+
+**阶段二 `layout()`**——极快的纯数学运算：
+
+```javascript
+// 伪代码：layout 阶段的核心逻辑
+function layout(prepared, containerWidth) {
+  // 不访问 DOM，纯数值计算
+  let currentLineWidth = 0;
+  let lines = [[]];
+  
+  for (let i = 0; i < prepared.segments.length; i++) {
+    const segWidth = prepared.widths[i];  // 直接读缓存
+    
+    if (currentLineWidth + segWidth > containerWidth) {
+      // 换行（还要处理标点粘附、空格悬挂等细节）
+      lines.push([]);
+      currentLineWidth = 0;
+    }
+    
+    lines[lines.length - 1].push(prepared.segments[i]);
+    currentLineWidth += segWidth;
+  }
+  
+  return {
+    height: lines.length * lineHeight,
+    lineCount: lines.length,
+    lines: lines  // 可用于 Canvas 逐行绘制
+  };
+}
+
+// 使用：容器宽度变化时，只需重新调用 layout()
+// 不需要重新测量宽度 → 不触发任何 DOM 操作
+```
+
+**关键技术细节**：
+
+| 技术点 | 说明 |
+|:---|:---|
+| **Intl.Segmenter** | 正确处理 Unicode 字素边界，避免在 Emoji（👨‍👩‍👧‍👦）或组合字符中间断开 |
+| **标点粘附** | CJK 标点（。，！？）不允许出现在行首，需和前一个字符绑定 |
+| **空格悬挂** | 英文单词间的空格在行末可以"悬挂"在容器外，不计入行宽 |
+| **Emoji 宽度校正** | `measureText` 对部分 Emoji 返回值不准确，需要特殊修正 |
+| **BiDi** | 阿拉伯语/希伯来语从右到左书写，混排时需要 Unicode BiDi 算法 |
+
+#### 性能对比与精度
+
+```
+性能对比（10,000 字文本，容器宽度 300px → 200px）：
+
+传统 DOM 方案：
+  测量 + 布局 = ~20,000ms（20秒）— 10,000 次 Reflow
+  窗口 resize 时需全部重来
+
+零 DOM 方案（两阶段）：
+  prepare() = ~19ms（一次性）
+  layout()  = ~0.09ms（每次调用）
+  窗口 resize 时只需 layout() → 0.09ms
+
+  提速：~200,000 倍（layout 阶段 vs 传统方案）
+```
+
+精度方面，以 Pretext 的测试数据为例：
+
+```
+精度对比（vs 浏览器原生 DOM 排版结果）：
+  英文文本：99.25% 行数一致（4,000 段落测试）
+  中文文本：99.68% 行数一致
+  日文文本：98.73% 行数一致
+  混合内容：98.05% 行数一致
+
+  不一致的 case 通常是边界像素级差异（<1px）导致的行折断分歧
+```
+
+#### 工程影响与应用场景
+
+| 传统痛点 | 零 DOM 排版解锁的能力 |
+|:---|:---|
+| 虚拟列表只能固定行高 | **动态行高虚拟列表**——精准预计算每行高度 |
+| 新内容加载时页面跳动（CLS）| **零布局偏移**——内容渲染前已知精确高度 |
+| Canvas/SVG 无法排版多行文字 | 输出逐行数据，**Canvas `fillText()` 逐行绘制** |
+| 服务端无法测量文字 | 配合字体度量数据实现 **SSR 排版** |
+| 文本编辑器光标定位慢 | 纯数学定位，**告别 DOM 查询** |
+
+#### 局限性与权衡
+
+```
+当前方案的局限：
+1. 只处理纯文本——不能替代浏览器的完整 CSS 排版引擎
+   （inline 元素、float、flex 内的文本等无法处理）
+2. Canvas measureText 的跨浏览器一致性不如 DOM
+   （字距微调 kerning、连字 ligature 的处理有差异）
+3. prepare() 阶段仍需要浏览器环境（Canvas API）
+   （真正的 SSR 需要额外的字体度量数据）
+4. 精度在边界 case 约有 1-2% 的偏差
+   （对于"少一行/多一行"敏感的场景需要注意）
+```
+
+#### 行业趋势
+
+零 DOM 文本测量已经成为高性能前端的一个显著趋势：
+
+- **[Pretext](https://github.com/chenglou/pretext)**（2025）：通用文本布局库，两阶段架构
+- **[uWrap](https://github.com/nicolo-ribaudo/uwrap)**：轻量级文本折行计算
+- **Excalidraw**：白板工具内部使用 Canvas measureText 进行文本测量
+- **VS Code (Monaco)**：编辑器使用 Canvas 进行字符宽度测量和光标定位
+- **Figma**：完全自研的 Canvas 文本渲染引擎
+
+这反映了一个趋势：**越来越多的高交互场景正在"绕过"浏览器的 DOM 布局引擎，直接访问底层能力**。这与 WASM、OffscreenCanvas、WebGPU 等技术的发展方向一致——让前端应用获得接近原生的性能控制力。
 
 ---
 
