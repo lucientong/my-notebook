@@ -17,6 +17,11 @@
 - [MyBatis实战](#mybatis实战)
 - [性能调优](#性能调优)
 
+### 现代Java特性
+- [Java 21 虚拟线程](#java-21-虚拟线程project-loom)
+- [ZGC vs Shenandoah GC 对比](#zgc-vs-shenandoah-gc-对比)
+- [Records 与 Sealed Classes](#records-与-sealed-classes)
+
 ### 工程实践与自查
 - [实战案例](#实战案例)
 - [面试题自查](#面试题自查)
@@ -1942,6 +1947,377 @@ spring.datasource.hikari.max-lifetime=1800000     # 连接最大存活时间（3
 
 ---
 
+## Java 21 虚拟线程（Project Loom）
+
+### 虚拟线程原理
+
+Java 21 正式引入**虚拟线程**（Virtual Threads），这是 JDK 历史上对并发模型最重大的革新之一。虚拟线程是**用户态线程**，由 JVM 调度而非操作系统调度，创建和切换成本极低。
+
+**核心机制：Continuation（续体）**
+
+```
+传统平台线程（Platform Thread）：
+┌──────────────────────────────────────────┐
+│  Java Thread  ←→  OS Thread（1:1 映射）   │
+│  创建成本：~1MB 栈内存 + OS 线程资源       │
+│  上下文切换：需要内核态切换（~1-10μs）      │
+│  数量上限：通常数千个                      │
+└──────────────────────────────────────────┘
+
+虚拟线程（Virtual Thread）：
+┌──────────────────────────────────────────┐
+│  Virtual Thread ←→ Carrier Thread（M:N）  │
+│  创建成本：~数百字节（动态增长栈）          │
+│  上下文切换：用户态切换（~数十ns）          │
+│  数量上限：可轻松创建百万级                 │
+└──────────────────────────────────────────┘
+
+调度模型：
+Virtual Thread 1 ─┐
+Virtual Thread 2 ─┼──→ Carrier Thread Pool（ForkJoinPool）
+Virtual Thread 3 ─┤    （默认大小 = CPU 核心数）
+    ...           ─┘
+
+Continuation 机制：
+1. 虚拟线程执行到阻塞操作（如 IO）
+2. JVM 将当前执行状态保存为 Continuation（栈帧快照）
+3. 释放 Carrier Thread，调度其他虚拟线程
+4. IO 完成后，恢复 Continuation 继续执行
+→ 阻塞操作不再阻塞 OS 线程！
+```
+
+---
+
+### 虚拟线程 vs 平台线程
+
+| 维度 | 平台线程（Platform Thread） | 虚拟线程（Virtual Thread） |
+|------|---------------------------|--------------------------|
+| **映射关系** | 1:1（Java 线程 : OS 线程） | M:N（虚拟线程 : Carrier 线程） |
+| **栈内存** | 固定 ~1MB（-Xss 配置） | 动态增长，初始数百字节 |
+| **创建成本** | 高（OS 资源分配） | 极低（JVM 堆对象） |
+| **上下文切换** | 内核态切换（昂贵） | 用户态切换（廉价） |
+| **可创建数量** | 数千级 | 百万级 |
+| **调度** | OS 调度器 | JVM ForkJoinPool |
+| **适用场景** | CPU 密集型 | IO 密集型 |
+| **synchronized** | 正常工作 | 会 pin 住 Carrier Thread（应改用 ReentrantLock） |
+
+---
+
+### 代码示例
+
+**基础用法**：
+
+```java
+// 1. 直接创建虚拟线程
+Thread vt = Thread.ofVirtual().name("vt-1").start(() -> {
+    System.out.println("Running on: " + Thread.currentThread());
+});
+vt.join();
+
+// 2. 虚拟线程工厂
+ThreadFactory factory = Thread.ofVirtual().name("worker-", 0).factory();
+Thread t = factory.newThread(() -> doWork());
+
+// 3. 虚拟线程执行器（推荐用于替代线程池）
+try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+    // 每个任务一个虚拟线程，不需要池化！
+    for (int i = 0; i < 100_000; i++) {
+        executor.submit(() -> {
+            // 模拟 IO 操作
+            Thread.sleep(Duration.ofSeconds(1));
+            return fetchDataFromDB();
+        });
+    }
+} // try-with-resources 自动等待所有任务完成
+```
+
+**StructuredTaskScope（结构化并发）**：
+
+```java
+import java.util.concurrent.StructuredTaskScope;
+
+// 结构化并发：子任务的生命周期绑定到父作用域
+Response handleRequest(Request request) throws Exception {
+    // ShutdownOnFailure：任一子任务失败则取消所有
+    try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
+        // fork 出多个子任务（每个运行在独立虚拟线程中）
+        Subtask<User> userTask = scope.fork(() -> fetchUser(request.userId()));
+        Subtask<Order> orderTask = scope.fork(() -> fetchOrder(request.orderId()));
+        Subtask<Inventory> inventoryTask = scope.fork(() -> checkInventory(request.itemId()));
+
+        scope.join();            // 等待所有子任务完成
+        scope.throwIfFailed();   // 如果有失败，抛出异常
+
+        // 所有子任务成功，组装结果
+        return new Response(userTask.get(), orderTask.get(), inventoryTask.get());
+    }
+    // scope 关闭时，未完成的子任务自动取消（不会泄漏）
+}
+
+// ShutdownOnSuccess：任一子任务成功则取消其他
+String fetchFromFastestMirror(String url) throws Exception {
+    try (var scope = new StructuredTaskScope.ShutdownOnSuccess<String>()) {
+        scope.fork(() -> fetchFrom(mirror1, url));
+        scope.fork(() -> fetchFrom(mirror2, url));
+        scope.fork(() -> fetchFrom(mirror3, url));
+
+        scope.join();
+        return scope.result();  // 返回最先完成的结果
+    }
+}
+```
+
+---
+
+### 适用场景
+
+```
+✅ IO 密集型场景（虚拟线程的最佳战场）：
+- Web 服务器处理大量并发请求（每请求一个虚拟线程）
+- 微服务间 HTTP/gRPC 调用
+- 数据库查询、Redis 操作
+- 文件读写、网络 IO
+
+❌ CPU 密集型场景（虚拟线程无优势）：
+- 科学计算、数据分析
+- 图像/视频处理
+- 加密/压缩
+→ CPU 密集任务应继续使用平台线程池（ForkJoinPool / 固定大小线程池）
+
+⚠️ 注意事项：
+- 不要池化虚拟线程（它们本身就很轻量，用完即弃）
+- 避免在虚拟线程中使用 synchronized（改用 ReentrantLock）
+- ThreadLocal 在百万虚拟线程中可能导致内存问题（考虑 ScopedValue）
+```
+
+---
+
+## ZGC vs Shenandoah GC 对比
+
+### 算法原理对比
+
+**ZGC — 染色指针 + 读屏障**：
+
+```
+核心思想：在指针中嵌入 GC 元数据
+
+64 位指针布局：
+[未使用 16位][Finalizable 1位][Remapped 1位][Marked1 1位][Marked0 1位][地址 42位]
+
+工作流程：
+1. 并发标记：通过染色指针标记存活对象（修改指针颜色位）
+2. 并发转移：将存活对象复制到新 Region
+3. 读屏障（Load Barrier）：首次访问已转移对象时，修正指针
+   Object obj = field.ref;    // 触发读屏障
+   if (obj.颜色位 != 当前期望颜色) {
+       obj = 转发表.查找新地址(obj);
+       field.ref = obj;        // 自愈（后续访问无开销）
+   }
+
+优势：读屏障有"自愈"能力，指针修正后后续访问零开销
+劣势：依赖 64 位指针，不支持压缩指针（-XX:-UseCompressedOops）
+```
+
+**Shenandoah — Brooks 指针 + 写屏障**：
+
+```
+核心思想：每个对象头增加一个转发指针（Brooks Pointer）
+
+对象布局：
+┌──────────────┬──────────────────────┐
+│ Brooks Pointer│ 对象头 + 实例数据     │
+│ (指向自身或   │                      │
+│  新地址)      │                      │
+└──────────────┴──────────────────────┘
+
+工作流程：
+1. 并发标记：遍历对象图，标记存活对象
+2. 并发转移：复制对象到新位置，更新 Brooks Pointer 指向新地址
+3. 写屏障（Write Barrier）：写入引用时检查并更新
+   field.ref = newObj;   // 触发写屏障
+   // 确保写入的是对象的最新地址
+
+优势：兼容压缩指针，内存开销更可控
+劣势：每个对象额外 8 字节（Brooks Pointer），写屏障对吞吐量影响更大
+```
+
+---
+
+### 全面对比
+
+| 维度 | ZGC | Shenandoah |
+|------|-----|-----------|
+| **所属** | Oracle（JDK 11+ 实验，JDK 15+ 正式） | Red Hat（JDK 12+ 实验，JDK 15+ 正式） |
+| **核心技术** | 染色指针 + 读屏障 | Brooks 指针 + 写屏障 |
+| **指针开销** | 占用指针高位 4 位 | 每个对象 +8 字节 |
+| **屏障类型** | 读屏障（Load Barrier） | 写屏障（Write/Store Barrier） |
+| **自愈能力** | 有（指针修正后零开销） | 无（每次写入都有屏障开销） |
+| **压缩指针** | 不支持（JDK 21 前） | 支持 |
+| **最大停顿** | < 1ms（亚毫秒级） | < 10ms |
+| **吞吐量损失** | ~5-10% | ~10-15% |
+| **最大堆支持** | 16TB | 无硬性限制 |
+| **分代支持** | JDK 21+ 分代 ZGC | 无分代 |
+| **适用 JDK** | Oracle JDK / OpenJDK | OpenJDK（Oracle JDK 不内置） |
+
+---
+
+### 适用场景
+
+| 场景 | 推荐 | 原因 |
+|------|------|------|
+| **超低延迟（金融交易）** | ZGC | 亚毫秒级停顿，自愈读屏障吞吐影响小 |
+| **大堆应用（> 16GB）** | ZGC | 停顿与堆大小无关，分代 ZGC 更高效 |
+| **中等堆 + 需要压缩指针** | Shenandoah | 支持压缩指针，内存更紧凑 |
+| **非 Oracle JDK 环境** | Shenandoah | Red Hat 系 JDK 原生支持 |
+| **吞吐量优先** | 都不推荐 | 用 Parallel GC 或 G1 |
+
+---
+
+## Records 与 Sealed Classes
+
+### Record 类（JDK 16+）
+
+Record 是**不可变数据载体**的语法糖，编译器自动生成构造器、getter、`equals()`、`hashCode()`、`toString()`。
+
+**语法示例**：
+
+```java
+// 定义 Record（一行搞定）
+public record Point(int x, int y) {}
+
+// 等价于编译器生成的完整类：
+public final class Point {
+    private final int x;
+    private final int y;
+
+    public Point(int x, int y) {     // 规范构造器
+        this.x = x;
+        this.y = y;
+    }
+
+    public int x() { return x; }     // getter（无 get 前缀）
+    public int y() { return y; }
+
+    @Override
+    public boolean equals(Object o) { /* 基于所有字段 */ }
+    @Override
+    public int hashCode() { /* 基于所有字段 */ }
+    @Override
+    public String toString() { return "Point[x=1, y=2]"; }
+}
+
+// 使用
+Point p = new Point(3, 4);
+int x = p.x();                      // 3（注意不是 getX()）
+System.out.println(p);              // Point[x=3, y=4]
+
+// 紧凑构造器（Compact Constructor）：用于参数校验
+public record Range(int lo, int hi) {
+    public Range {                   // 无参数列表
+        if (lo > hi) throw new IllegalArgumentException("lo > hi");
+        // 自动赋值 this.lo = lo; this.hi = hi;
+    }
+}
+
+// Record 可以实现接口
+public record NamedPoint(String name, int x, int y) implements Serializable {}
+
+// Record 可以有静态字段和方法，但不能有实例字段
+public record Circle(double radius) {
+    public static final Circle UNIT = new Circle(1.0);
+    public double area() { return Math.PI * radius * radius; }
+}
+```
+
+---
+
+### Record vs Lombok
+
+| 维度 | Record | Lombok（@Data / @Value） |
+|------|--------|-------------------------|
+| **JDK 版本** | 16+ 原生支持 | 任意版本（注解处理器） |
+| **可变性** | 始终不可变（final 字段） | @Data 可变，@Value 不可变 |
+| **继承** | 不可继承（隐式 final） | 可继承 |
+| **getter 命名** | `x()`（无前缀） | `getX()` |
+| **Builder** | 不支持（需手写或第三方） | `@Builder` 支持 |
+| **自定义字段** | 不允许额外实例字段 | 允许 |
+| **IDE 支持** | 原生支持 | 需要插件 |
+| **编译依赖** | 无 | 需要 Lombok 依赖 |
+| **适用场景** | DTO、值对象、API 响应 | 复杂实体、需要 Builder |
+
+---
+
+### Sealed Classes（JDK 17+）
+
+Sealed Classes 限制哪些类可以继承/实现它，实现**封闭的类型层次**。
+
+**语法示例**：
+
+```java
+// 密封接口：只允许指定的类实现
+public sealed interface Shape
+    permits Circle, Rectangle, Triangle {}
+
+// 允许的子类必须是 final / sealed / non-sealed 之一
+public record Circle(double radius) implements Shape {}         // final（Record 隐式 final）
+public final class Rectangle implements Shape {                 // final：不可再继承
+    private final double width, height;
+    public Rectangle(double width, double height) {
+        this.width = width; this.height = height;
+    }
+}
+public non-sealed class Triangle implements Shape {             // non-sealed：开放继承
+    // 任何类都可以继承 Triangle
+}
+
+// 密封类 + 模式匹配（JDK 21+）：编译器保证穷举
+public double area(Shape shape) {
+    return switch (shape) {
+        case Circle c    -> Math.PI * c.radius() * c.radius();
+        case Rectangle r -> r.width() * r.height();
+        case Triangle t  -> t.calculateArea();
+        // 无需 default！编译器知道所有子类型（穷举检查）
+    };
+}
+```
+
+---
+
+### Sealed Classes 实现代数数据类型（ADT）
+
+```java
+// 用 Sealed Interface + Record 模拟函数式语言的 ADT
+// 类似 Haskell: data Expr = Lit Double | Add Expr Expr | Mul Expr Expr
+public sealed interface Expr
+    permits Lit, Add, Mul, Neg {}
+
+public record Lit(double value) implements Expr {}
+public record Add(Expr left, Expr right) implements Expr {}
+public record Mul(Expr left, Expr right) implements Expr {}
+public record Neg(Expr expr) implements Expr {}
+
+// 模式匹配求值（完全穷举，类型安全）
+public double eval(Expr expr) {
+    return switch (expr) {
+        case Lit(var v)        -> v;
+        case Add(var l, var r) -> eval(l) + eval(r);
+        case Mul(var l, var r) -> eval(l) * eval(r);
+        case Neg(var e)        -> -eval(e);
+    };
+}
+
+// 使用
+Expr expression = new Add(new Lit(1), new Mul(new Lit(2), new Lit(3)));
+double result = eval(expression);  // 1 + (2 * 3) = 7.0
+
+// 优势：
+// 1. 新增子类型 → 编译器强制处理所有 switch（不会遗漏）
+// 2. Record 不可变 + Sealed 封闭 = 安全的数据建模
+// 3. 解构模式匹配（JDK 21+）使代码简洁优雅
+```
+
+---
+
 
 ## 实战案例
 
@@ -2063,6 +2439,294 @@ Java 面试重点：
 - `ArrayList` 和 `LinkedList` 的区别是什么？
 - `HashMap` 和 `ConcurrentHashMap` 的区别是什么？
 - checked exception 和 unchecked exception 有什么区别？
+
+---
+
+### 中级高频进阶
+
+#### Q-M1：Spring Boot 自动配置原理是什么？@EnableAutoConfiguration 如何工作？
+
+**答**：
+
+Spring Boot 自动配置的核心流程：
+
+**1. 入口注解**：`@SpringBootApplication` 包含 `@EnableAutoConfiguration`，它通过 `@Import(AutoConfigurationImportSelector.class)` 触发自动配置。
+
+**2. 加载候选配置类**：
+- **Spring Boot 2.x**：`AutoConfigurationImportSelector` 从 classpath 下所有 `META-INF/spring.factories` 文件中读取 `EnableAutoConfiguration` 对应的配置类全限定名。
+- **Spring Boot 3.x**：改为读取 `META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports` 文件。
+
+**3. 条件注解过滤**：加载的配置类通过**条件注解**决定是否生效：
+
+```java
+@Configuration
+@ConditionalOnClass(DataSource.class)          // classpath 有 DataSource 类才生效
+@ConditionalOnMissingBean(DataSource.class)    // 容器中没有 DataSource Bean 才生效
+@ConditionalOnProperty(prefix = "spring.datasource", name = "url")  // 配置了该属性才生效
+@EnableConfigurationProperties(DataSourceProperties.class)
+public class DataSourceAutoConfiguration {
+
+    @Bean
+    @ConditionalOnMissingBean
+    public DataSource dataSource(DataSourceProperties properties) {
+        return properties.initializeDataSourceBuilder().build();
+    }
+}
+```
+
+**常用条件注解**：
+
+| 注解 | 含义 |
+|------|------|
+| `@ConditionalOnClass` | classpath 存在指定类 |
+| `@ConditionalOnMissingClass` | classpath 不存在指定类 |
+| `@ConditionalOnBean` | 容器中存在指定 Bean |
+| `@ConditionalOnMissingBean` | 容器中不存在指定 Bean |
+| `@ConditionalOnProperty` | 配置文件中存在指定属性 |
+| `@ConditionalOnWebApplication` | 当前是 Web 应用 |
+
+**4. 用户自定义优先**：由于 `@ConditionalOnMissingBean`，用户手动定义的 Bean 会覆盖自动配置的 Bean（"约定优于配置"的实现机制）。
+
+---
+
+#### Q-M2：MyBatis 一级缓存和二级缓存的区别？为什么生产中通常禁用二级缓存？
+
+**答**：
+
+**一级缓存（SqlSession 级别）**：
+- **作用域**：同一个 `SqlSession` 内有效（默认开启，无法关闭）
+- **存储结构**：`PerpetualCache`（HashMap）
+- **失效场景**：
+  - SqlSession 执行了 `insert`/`update`/`delete`（清空整个一级缓存）
+  - SqlSession 调用了 `clearCache()`
+  - SqlSession 关闭或提交
+  - 查询配置了 `flushCache="true"`
+
+**二级缓存（Mapper/Namespace 级别）**：
+- **作用域**：同一个 Mapper namespace 内，跨 SqlSession 共享
+- **开启方式**：Mapper XML 中加 `<cache/>`，或注解 `@CacheNamespace`
+- **存储结构**：默认 `PerpetualCache`，支持集成 Ehcache/Redis
+- **失效场景**：
+  - 该 namespace 下执行了写操作
+  - 配置的 `flushInterval` 到期
+
+**生产中禁用二级缓存的原因**：
+
+```
+1. 脏读风险（最致命）：
+   - UserMapper 缓存了 User 数据
+   - OrderMapper 中执行了 UPDATE users SET ...（关联更新）
+   - UserMapper 的二级缓存不会失效 → 读到旧数据！
+   （多表关联场景下几乎必然出问题）
+
+2. 缓存粒度太粗：
+   - 任何写操作都清空整个 namespace 缓存
+   - 高并发写场景下缓存命中率极低
+
+3. 分布式环境失效：
+   - 默认本地缓存，多节点各自缓存不一致
+   - 即使用 Redis 做二级缓存，仍有多表关联脏读问题
+
+4. 更好的替代方案：
+   - 业务层缓存（Redis/Caffeine）：粒度可控、主动失效
+   - Spring Cache 抽象：统一管理缓存策略
+```
+
+**最佳实践**：关闭二级缓存（`mybatis.configuration.cache-enabled=false`），在 Service 层使用 Redis + 合理的缓存失效策略。
+
+---
+
+#### Q-M3：线程池如何调优？核心参数的选择依据是什么？
+
+**答**：
+
+**核心参数选择公式**：
+
+```
+设 N = CPU 核心数
+
+CPU 密集型任务（计算、加密、压缩）：
+  corePoolSize = N + 1
+  （+1 是为了在某线程因页缺失等短暂阻塞时，仍能充分利用 CPU）
+  队列：较小的有界队列（避免任务堆积）
+
+IO 密集型任务（网络请求、数据库查询、文件读写）：
+  corePoolSize = N × (1 + W/C)
+  其中 W = 平均等待时间，C = 平均计算时间
+  例如：8核 CPU，任务 80% 时间在等待 IO → 8 × (1 + 80/20) = 40
+
+混合型任务：
+  拆分为 CPU 密集和 IO 密集两个线程池，分别调优
+```
+
+**各参数选择依据**：
+
+| 参数 | 选择依据 |
+|------|---------|
+| `corePoolSize` | 根据任务类型（CPU/IO）和公式计算；压测验证 |
+| `maximumPoolSize` | 应对突发流量，通常 core 的 2-4 倍 |
+| `keepAliveTime` | 60s 为常见值；流量波动大时适当加大 |
+| `workQueue` | 有界队列（`LinkedBlockingQueue(capacity)`）防 OOM；容量 = 预期峰值 QPS × 平均响应时间 |
+| `handler` | Web 应用推荐 `CallerRunsPolicy`（降速不丢弃）；日志等可丢弃任务用 `DiscardPolicy` |
+
+**关键监控指标**：
+
+```java
+ThreadPoolExecutor pool = ...;
+
+// 运行时监控
+pool.getActiveCount();       // 活跃线程数
+pool.getPoolSize();          // 当前线程数
+pool.getQueue().size();      // 队列堆积数
+pool.getCompletedTaskCount(); // 已完成任务数
+pool.getLargestPoolSize();   // 历史最大线程数
+
+// 报警阈值建议：
+// - 队列使用率 > 80% → 预警（可能需要扩容）
+// - 活跃线程数 = maximumPoolSize → 预警（线程池饱和）
+// - 拒绝任务数 > 0 → 告警（任务被丢弃/降级）
+```
+
+**常见调优陷阱**：
+- 不要用 `Executors.newFixedThreadPool()`（无界队列，OOM 风险）
+- 不要用 `Executors.newCachedThreadPool()`（无上限线程数，OOM 风险）
+- 线程池不是越大越好——过多线程导致上下文切换开销剧增
+
+---
+
+#### Q-M4：JVM 参数调优的思路？如何排查 Full GC？
+
+**答**：
+
+**JVM 核心参数选择**：
+
+```bash
+# 堆大小（最重要）
+-Xms4g -Xmx4g              # 初始=最大，避免动态扩缩容开销
+                             # 经验值：容器内存的 60-70%
+
+# GC 选择决策树：
+# 延迟敏感（P99 < 50ms）   → -XX:+UseZGC
+# 大堆（> 8GB）+ 平衡      → -XX:+UseG1GC
+# 吞吐量优先（批处理）      → -XX:+UseParallelGC
+# 小堆（< 2GB）+ 简单      → -XX:+UseSerialGC
+
+# G1 常用调参
+-XX:+UseG1GC
+-XX:MaxGCPauseMillis=200            # 目标停顿时间
+-XX:InitiatingHeapOccupancyPercent=45  # Mixed GC 触发阈值
+-XX:G1HeapRegionSize=16m            # Region 大小（堆/2048）
+-XX:G1ReservePercent=10             # 预留空间防止 to-space exhausted
+-XX:ConcGCThreads=4                 # 并发 GC 线程数
+
+# 元空间
+-XX:MetaspaceSize=256m -XX:MaxMetaspaceSize=512m
+
+# GC 日志（必开）
+-Xlog:gc*,gc+age=trace:file=gc.log:time,uptime,level,tags:filecount=5,filesize=50m
+```
+
+**排查 Full GC 的完整步骤**：
+
+```
+Step 1: 确认问题
+$ jstat -gcutil <pid> 1000    # 观察 FGC 列是否持续增长
+  S0     S1     E      O      M     CCS    YGC    YGCT   FGC    FGCT
+  0.00  45.23  67.89  92.15  95.30  91.50  1234   12.5   45     120.3
+                              ↑ 老年代 92% 满！                  ↑ 45次 Full GC
+
+Step 2: 分析 GC 日志
+$ grep "Full GC" gc.log
+[2024-01-15T10:23:45] GC(89) Pause Full (Allocation Failure) 3800M->2100M(4096M) 3.2s
+→ 原因：Allocation Failure（老年代分配失败）
+→ 回收效果：3800M→2100M（回收了 1700M，说明有大量长期存活对象）
+
+Step 3: 查看对象分布
+$ jmap -histo:live <pid> | head -20
+ num     #instances    #bytes  class name
+   1:      5000000    480000000  com.example.CacheEntry  ← 可疑！
+   2:      3000000    240000000  [B (byte arrays)
+→ 定位到占用内存最多的类
+
+Step 4: 导出堆转储深入分析
+$ jmap -dump:live,format=b,file=heap.hprof <pid>
+→ 用 Eclipse MAT 打开，分析 Leak Suspects / Dominator Tree
+
+Step 5: 常见根因与解决方案
+┌──────────────────────┬─────────────────────────────────┐
+│ 根因                  │ 解决方案                         │
+├──────────────────────┼─────────────────────────────────┤
+│ 内存泄漏（缓存无淘汰） │ 加 TTL/LRU 淘汰策略              │
+│ 大对象频繁创建         │ 对象池化 / 减小对象体积           │
+│ 堆设置过小            │ 增大 -Xmx                        │
+│ Metaspace 溢出        │ 增大 MetaspaceSize / 排查类加载    │
+│ System.gc() 调用      │ -XX:+DisableExplicitGC           │
+│ 晋升过快              │ 增大新生代（-XX:NewRatio）         │
+└──────────────────────┴─────────────────────────────────┘
+```
+
+---
+
+#### Q-M5：分布式 Session 有哪些方案？各自的优缺点？
+
+**答**：
+
+**方案对比表**：
+
+| 方案 | 原理 | 优点 | 缺点 | 适用场景 |
+|------|------|------|------|---------|
+| **Session 复制** | 节点间广播复制 Session | 实现简单（Tomcat 内置支持） | 网络带宽消耗大，节点多时 O(n²) 同步开销 | 小集群（< 5 节点） |
+| **Session 粘连** | 负载均衡器将同一用户路由到固定节点 | 无需共享存储 | 节点宕机 Session 丢失；负载不均衡 | 可接受 Session 丢失的场景 |
+| **集中式存储** | Session 存储在 Redis/DB 中 | 水平扩展、节点无状态、高可用 | 增加网络 IO（每次请求访问 Redis）；Redis 故障影响全局 | 大规模集群（推荐） |
+| **Token 化（JWT）** | Session 信息编码在 Token 中，客户端携带 | 完全无状态、无需服务端存储 | Token 无法主动失效（需黑名单）；payload 大增加带宽；敏感信息不能放入 | 微服务/跨域/移动端 |
+
+**集中式存储方案（生产推荐）**：
+
+```java
+// Spring Session + Redis（最常用）
+// 1. 依赖
+// spring-boot-starter-data-redis
+// spring-session-data-redis
+
+// 2. 配置
+@EnableRedisHttpSession(maxInactiveIntervalInSeconds = 1800)
+@Configuration
+public class SessionConfig {}
+
+// application.yml
+spring:
+  session:
+    store-type: redis
+  redis:
+    host: redis-cluster
+    port: 6379
+
+// 3. 使用方式不变（对业务透明）
+@GetMapping("/user")
+public String getUser(HttpSession session) {
+    return (String) session.getAttribute("user");
+}
+// Session 自动存储在 Redis 中：spring:session:sessions:<sessionId>
+```
+
+**Token 化方案（JWT）**：
+
+```java
+// JWT 结构：Header.Payload.Signature
+// 无状态：服务端不存储，只验签
+
+// 优化：短 Token + Refresh Token
+// Access Token：有效期短（15min），携带用户信息
+// Refresh Token：有效期长（7d），存 Redis，用于换发 Access Token
+// 主动失效：Refresh Token 存 Redis，登出时删除
+```
+
+**选型建议**：
+- **单体应用/中小集群**：Spring Session + Redis（简单可靠）
+- **微服务架构**：JWT（Access + Refresh Token）
+- **混合方案**：网关层 JWT 验签 + 服务层 Redis Session（兼顾性能和可控性）
+
+---
 
 ### Q1：Java 泛型的类型擦除是什么？它带来了哪些限制？
 
@@ -2225,4 +2889,25 @@ Java 面试重点：
 3. 下游调用设置超时和重试预算，避免无限重试放大。
 4. 对账与补偿机制兜底（尤其是跨服务、跨存储链路）。
 
-面试里更高分的回答是讲清“幂等边界在哪、冲突时返回什么、失败后怎么补偿”。
+面试里更高分的回答是讲清”幂等边界在哪、冲突时返回什么、失败后怎么补偿”。
+
+### 开放式设计题
+
+**D1：设计一个支持10万QPS的Java网关服务，核心考虑什么？**
+
+**参考思路**：
+- 线程模型：Netty EventLoop（Reactor多线程模型）、避免在IO线程做阻塞操作
+- 内存管理：堆外内存（DirectByteBuffer）减少GC、ByteBuf池化复用
+- GC选型：ZGC（低延迟优先）或G1（平衡吞吐），Heap控制在16-24GB
+- 路由与过滤：责任链模式的Filter Pipeline、动态路由配置热更新
+- 限流熔断：集成Sentinel/Resilience4j、按租户/API粒度限流
+- 可观测性：Micrometer+Prometheus指标、分布式追踪（SkyWalking/Jaeger）
+
+**D2：一个Java服务Full GC每小时发生一次，每次停顿2秒，如何优化到每天不超过1次且停顿<200ms？**
+
+**参考思路**：
+- 诊断：GC日志分析（-Xlog:gc*）、确认是Old区满还是Metaspace满、jmap查大对象
+- 减少对象分配：对象池复用、避免自动装箱、StringBuilder替代字符串拼接
+- GC调优：切换到ZGC/G1、调整新生代比例(-XX:NewRatio)、G1的MaxGCPauseMillis
+- 架构优化：大对象走堆外(ByteBuffer)或缓存服务(Redis)、异步处理减少对象生命周期
+- 验证：压测对比GC指标、灰度发布观察

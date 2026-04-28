@@ -2181,3 +2181,23 @@ Index Condition Pushdown（MySQL 5.6+）将部分 WHERE 条件下推到存储引
 #### Q20: 如何设计一个金融交易系统的扣款流程？需要考虑哪些问题？
 
 核心考虑：① 原子性：在事务中完成余额查询、检查、扣减、记录流水，使用 `FOR UPDATE` 悲观锁或 version 乐观锁保证一致；② 幂等性：通过 request_id 唯一键保证同一请求不重复扣款（`INSERT ... ON DUPLICATE KEY`）；③ 余额校验：SQL 层面 `WHERE balance >= @amount` 双重检查（应用层+SQL层）防止并发超扣；④ 流水记录：记录交易前后余额（balance_before/balance_after）用于对账；⑤ 防止死锁：多账户操作时按 account_id 升序加锁。
+
+### 开放式设计题
+
+**D1：设计一个日均10亿条写入的订单表存储方案，你会怎么做？**
+
+**参考思路**：
+- 分库分表策略：按用户ID哈希分库（16库×64表）、按时间范围分区（归档查询）
+- 写入优化：批量Insert、异步写入（MQ削峰）、关闭双1设置（innodb_flush_log_at_trx_commit=2用于非资损场景）
+- 查询兼容：订单号内嵌分片信息（Snowflake编码用户ID后缀）、全局唯一索引方案
+- 数据归档：冷热分离（3个月以上迁移到TiDB/ClickHouse）、在线DDL工具（gh-ost）
+- 关键取舍：强一致性（同步复制+半同步）vs 性能，跨分片查询的代价
+
+**D2：如果线上MySQL主从延迟持续增大到30秒以上，你的排查和解决思路是什么？**
+
+**参考思路**：
+- 确认延迟：show slave status → Seconds_Behind_Master、GTID差距
+- IO线程瓶颈：网络带宽/Binlog传输速度 → 并行复制配置
+- SQL线程瓶颈：大事务回放慢 → binlog_group_commit、slave_parallel_workers调大、LOGICAL_CLOCK模式
+- 业务层应对：写后读走主库（设置Hint或中间件路由）、降级方案
+- 根因治理：拆分大事务、避免DDL长时间锁表、升级为MGR/组复制

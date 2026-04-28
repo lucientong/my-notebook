@@ -20,7 +20,8 @@
 11. [成本优化](#11-成本优化)
 12. [稳定性治理](#12-稳定性治理)
 13. [Chaos Engineering](#13-混沌工程)
-14. [面试题自查](#14-面试题自查)
+14. [容量规划与成本优化](#14-容量规划与成本优化)
+15. [面试题自查](#15-面试题自查)
 
 ---
 
@@ -1985,7 +1986,586 @@ spec:
 
 ---
 
-## 14. 面试题自查
+## 14. 容量规划与成本优化
+
+### 14.1 容量预估方法
+
+容量规划是 SRE 最核心的前置能力之一。低估导致故障，高估导致浪费。成熟的容量规划需要多种方法交叉验证。
+
+#### 14.1.1 基于QPS的容量预估
+
+```
+核心公式：
+所需实例数 = (峰值QPS × 安全系数) / 单实例承载QPS
+
+示例：
+- 业务峰值QPS：50,000
+- 单实例压测结果：2,000 QPS（P99 < 200ms）
+- 安全系数：1.5（预留50%余量应对突发）
+- 所需实例数 = (50,000 × 1.5) / 2,000 = 37.5 → 38台
+
+注意事项：
+- 单实例QPS必须通过压测获得，不能拍脑袋
+- 安全系数通常取1.3~2.0，取决于业务波动性
+- 峰值QPS要考虑业务增长（如大促、节假日）
+```
+
+```go
+package capacity
+
+type QPSBasedPlanner struct {
+    SingleInstanceQPS float64 // 单实例承载QPS（压测值）
+    SafetyFactor      float64 // 安全系数
+    MinInstances      int     // 最小实例数（高可用）
+}
+
+// Plan 根据目标QPS计算所需实例数
+func (p *QPSBasedPlanner) Plan(targetQPS float64) *CapacityPlan {
+    required := targetQPS * p.SafetyFactor / p.SingleInstanceQPS
+    instances := int(math.Ceil(required))
+
+    // 保证最小实例数（跨AZ部署至少3个）
+    if instances < p.MinInstances {
+        instances = p.MinInstances
+    }
+
+    return &CapacityPlan{
+        TargetQPS:     targetQPS,
+        Instances:     instances,
+        CPUPerInstance: p.estimateCPU(targetQPS / float64(instances)),
+        MemPerInstance: p.estimateMemory(targetQPS / float64(instances)),
+        Headroom:      float64(instances)*p.SingleInstanceQPS - targetQPS,
+    }
+}
+
+// BurstPlan 突发流量容量规划（如秒杀、开服）
+func (p *QPSBasedPlanner) BurstPlan(baseQPS, burstMultiplier float64) *CapacityPlan {
+    burstQPS := baseQPS * burstMultiplier
+    plan := p.Plan(burstQPS)
+    plan.BurstDuration = 30 * time.Minute // 预计突发持续时间
+    plan.ScaleUpLeadTime = 5 * time.Minute // 扩容提前量
+    return plan
+}
+```
+
+#### 14.1.2 基于资源的容量预估
+
+```go
+type ResourceBasedPlanner struct{}
+
+type ResourceProfile struct {
+    CPUCoresPerReq    float64       // 每请求CPU消耗（核·秒）
+    MemoryPerConn     int64         // 每连接内存消耗（MB）
+    DiskIOPerReq      float64       // 每请求磁盘IO（IOPS）
+    NetworkPerReq     int64         // 每请求网络带宽（KB）
+}
+
+// PlanByResource 根据资源消耗模型规划
+func (p *ResourceBasedPlanner) PlanByResource(
+    targetQPS float64,
+    profile *ResourceProfile,
+    instanceSpec *InstanceSpec,
+) *CapacityPlan {
+
+    // CPU维度
+    cpuInstances := math.Ceil(
+        targetQPS * profile.CPUCoresPerReq / (float64(instanceSpec.CPUCores) * 0.7), // CPU不超70%
+    )
+
+    // 内存维度（长连接场景）
+    memInstances := math.Ceil(
+        float64(profile.MemoryPerConn) * targetQPS / (float64(instanceSpec.MemoryMB) * 0.8 * 1024),
+    )
+
+    // 磁盘IO维度
+    diskInstances := math.Ceil(
+        targetQPS * profile.DiskIOPerReq / float64(instanceSpec.MaxIOPS),
+    )
+
+    // 取最大值（木桶原理：瓶颈资源决定容量）
+    instances := int(math.Max(cpuInstances, math.Max(memInstances, diskInstances)))
+
+    return &CapacityPlan{
+        Instances:  instances,
+        Bottleneck: p.identifyBottleneck(cpuInstances, memInstances, diskInstances),
+    }
+}
+
+func (p *ResourceBasedPlanner) identifyBottleneck(cpu, mem, disk float64) string {
+    max := math.Max(cpu, math.Max(mem, disk))
+    switch max {
+    case cpu:
+        return "CPU"
+    case mem:
+        return "Memory"
+    default:
+        return "DiskIO"
+    }
+}
+```
+
+#### 14.1.3 基于历史增长的容量预估
+
+```go
+type GrowthBasedPlanner struct {
+    historyData []DataPoint // 历史数据（QPS/DAU/存储量）
+}
+
+type DataPoint struct {
+    Timestamp time.Time
+    Value     float64
+}
+
+// LinearForecast 线性回归预测
+func (p *GrowthBasedPlanner) LinearForecast(targetDate time.Time) float64 {
+    n := float64(len(p.historyData))
+    var sumX, sumY, sumXY, sumX2 float64
+
+    baseTime := p.historyData[0].Timestamp
+    for _, dp := range p.historyData {
+        x := dp.Timestamp.Sub(baseTime).Hours() / 24 // 天数
+        y := dp.Value
+        sumX += x
+        sumY += y
+        sumXY += x * y
+        sumX2 += x * x
+    }
+
+    // y = a + b*x
+    b := (n*sumXY - sumX*sumY) / (n*sumX2 - sumX*sumX)
+    a := (sumY - b*sumX) / n
+
+    targetX := targetDate.Sub(baseTime).Hours() / 24
+    return a + b*targetX
+}
+
+// SeasonalForecast 考虑季节性的预测（如节假日高峰）
+func (p *GrowthBasedPlanner) SeasonalForecast(targetDate time.Time, seasonalFactor float64) float64 {
+    baseForecast := p.LinearForecast(targetDate)
+    return baseForecast * seasonalFactor
+}
+
+/*
+使用示例：
+- 过去90天DAU数据：线性增长
+- 预测30天后DAU → 基于线性回归
+- 春节期间 seasonalFactor = 2.5（历史数据表明春节流量是平时2.5倍）
+- 最终容量 = 预测DAU × 2.5 × 单用户资源消耗
+*/
+```
+
+---
+
+### 14.2 弹性伸缩策略
+
+#### 14.2.1 HPA / VPA / KEDA
+
+```yaml
+# HPA（Horizontal Pod Autoscaler）- 水平扩缩
+# 适用：无状态服务（API网关、Web服务）
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: game-api-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: game-api
+  minReplicas: 3
+  maxReplicas: 50
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30   # 扩容冷却30秒
+      policies:
+        - type: Percent
+          value: 100                    # 每次最多翻倍
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300  # 缩容冷却5分钟（防抖动）
+      policies:
+        - type: Percent
+          value: 10                     # 每次最多缩10%
+          periodSeconds: 60
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60       # CPU > 60% 触发扩容
+    - type: Pods
+      pods:
+        metric:
+          name: requests_per_second
+        target:
+          type: AverageValue
+          averageValue: "1000"         # 每Pod QPS > 1000 触发扩容
+```
+
+```yaml
+# VPA（Vertical Pod Autoscaler）- 垂直扩缩
+# 适用：有状态服务（数据库代理、缓存节点）
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: redis-proxy-vpa
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: StatefulSet
+    name: redis-proxy
+  updatePolicy:
+    updateMode: "Auto"        # 自动调整（会重启Pod）
+  resourcePolicy:
+    containerPolicies:
+      - containerName: redis-proxy
+        minAllowed:
+          cpu: "500m"
+          memory: "512Mi"
+        maxAllowed:
+          cpu: "4"
+          memory: "8Gi"
+        controlledResources: ["cpu", "memory"]
+```
+
+```yaml
+# KEDA（Kubernetes Event-Driven Autoscaling）- 事件驱动扩缩
+# 适用：消息消费者、异步任务处理器
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: reward-consumer
+spec:
+  scaleTargetRef:
+    name: reward-consumer
+  minReplicaCount: 1
+  maxReplicaCount: 30
+  pollingInterval: 10
+  triggers:
+    # 基于Kafka消费积压扩缩
+    - type: kafka
+      metadata:
+        bootstrapServers: kafka:9092
+        consumerGroup: reward-group
+        topic: reward-events
+        lagThreshold: "100"          # 积压超过100条就扩容
+    # 基于Prometheus自定义指标扩缩
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus:9090
+        metricName: pending_tasks
+        threshold: "50"
+        query: |
+          sum(pending_tasks{service="reward"})
+```
+
+#### 14.2.2 预测式扩容
+
+```go
+package autoscale
+
+import (
+    "math"
+    "time"
+)
+
+type PredictiveScaler struct {
+    historyWindow time.Duration // 历史窗口（如7天）
+    forecastAhead time.Duration // 提前预测时间（如10分钟）
+    metricsStore  MetricsStore
+}
+
+// PredictAndScale 基于历史模式预测并提前扩容
+func (s *PredictiveScaler) PredictAndScale(serviceName string) *ScaleDecision {
+    now := time.Now()
+    targetTime := now.Add(s.forecastAhead)
+
+    // 1. 获取上周同时段的历史数据
+    lastWeekSameTime := targetTime.Add(-7 * 24 * time.Hour)
+    historicalQPS := s.metricsStore.GetQPS(serviceName, lastWeekSameTime, 30*time.Minute)
+
+    // 2. 获取本周同时段趋势
+    recentQPS := s.metricsStore.GetQPS(serviceName, now.Add(-1*time.Hour), 1*time.Hour)
+
+    // 3. 加权预测：历史模式60% + 近期趋势40%
+    predictedQPS := historicalQPS*0.6 + recentQPS*1.1*0.4
+
+    // 4. 计算所需实例数
+    currentInstances := s.metricsStore.GetCurrentInstances(serviceName)
+    currentQPS := s.metricsStore.GetCurrentQPS(serviceName)
+    qpsPerInstance := currentQPS / float64(currentInstances)
+
+    neededInstances := int(math.Ceil(predictedQPS / qpsPerInstance * 1.3)) // 30%余量
+
+    if neededInstances > currentInstances {
+        return &ScaleDecision{
+            Action:    "scale_up",
+            Current:   currentInstances,
+            Target:    neededInstances,
+            Reason:    fmt.Sprintf("predicted QPS %.0f in %v", predictedQPS, s.forecastAhead),
+            Confidence: s.calculateConfidence(historicalQPS, recentQPS),
+        }
+    }
+
+    return &ScaleDecision{Action: "no_change"}
+}
+
+// calculateConfidence 计算预测置信度
+func (s *PredictiveScaler) calculateConfidence(historical, recent float64) float64 {
+    // 历史与近期偏差越小，置信度越高
+    deviation := math.Abs(historical-recent) / math.Max(historical, 1)
+    return math.Max(0, 1-deviation)
+}
+
+/*
+预测式扩容 vs 被动式扩容对比：
+
+被动式：
+  14:00 流量开始上涨
+  14:02 CPU超过60%阈值，触发HPA
+  14:03 新Pod调度+启动
+  14:05 新Pod就绪，开始接流量
+  → 中间5分钟处于过载状态
+
+预测式：
+  13:50 预测14:00会有流量高峰（基于上周同时段数据）
+  13:50 提前扩容，新Pod开始启动
+  13:55 新Pod就绪
+  14:00 流量到来时已有足够容量
+  → 零过载时间
+*/
+```
+
+---
+
+### 14.3 FinOps实践
+
+#### 14.3.1 资源利用率优化
+
+```go
+package finops
+
+type ResourceOptimizer struct {
+    metricsStore MetricsStore
+}
+
+type OptimizationReport struct {
+    Service          string
+    CurrentCost      float64
+    OptimizedCost    float64
+    SavingPercentage float64
+    Recommendations  []Recommendation
+}
+
+type Recommendation struct {
+    Type        string // "rightsize", "spot", "reserved", "idle"
+    Description string
+    Saving      float64
+}
+
+// Analyze 分析服务资源利用率并给出优化建议
+func (o *ResourceOptimizer) Analyze(serviceName string, window time.Duration) *OptimizationReport {
+    report := &OptimizationReport{Service: serviceName}
+
+    // 1. CPU利用率分析
+    avgCPU := o.metricsStore.GetAvgCPUUtilization(serviceName, window)
+    peakCPU := o.metricsStore.GetP99CPUUtilization(serviceName, window)
+
+    if avgCPU < 20 && peakCPU < 50 {
+        report.Recommendations = append(report.Recommendations, Recommendation{
+            Type:        "rightsize",
+            Description: fmt.Sprintf("CPU avg %.1f%%, peak %.1f%% → 建议降配50%%", avgCPU, peakCPU),
+            Saving:      o.calculateRightsizeSaving(serviceName, 0.5),
+        })
+    }
+
+    // 2. 内存利用率分析
+    avgMem := o.metricsStore.GetAvgMemUtilization(serviceName, window)
+    if avgMem < 30 {
+        report.Recommendations = append(report.Recommendations, Recommendation{
+            Type:        "rightsize",
+            Description: fmt.Sprintf("Memory avg %.1f%% → 建议降配至当前的60%%", avgMem),
+            Saving:      o.calculateRightsizeSaving(serviceName, 0.4),
+        })
+    }
+
+    // 3. 空闲实例检测
+    idleInstances := o.metricsStore.GetIdleInstances(serviceName, window)
+    if len(idleInstances) > 0 {
+        report.Recommendations = append(report.Recommendations, Recommendation{
+            Type:        "idle",
+            Description: fmt.Sprintf("发现%d个空闲实例，建议缩容", len(idleInstances)),
+            Saving:      o.calculateIdleSaving(idleInstances),
+        })
+    }
+
+    return report
+}
+```
+
+#### 14.3.2 Spot实例策略
+
+```go
+type SpotStrategy struct {
+    OnDemandRatio float64 // 按需实例比例（保底）
+    SpotPools     []SpotPool
+}
+
+type SpotPool struct {
+    InstanceType string
+    AZ           string
+    MaxPrice     float64 // 最高竞价
+    Weight       int     // 权重（用于多池分散风险）
+}
+
+/*
+Spot实例最佳实践：
+
+1. 混合部署策略：
+   ┌─────────────────────────────┐
+   │  30% On-Demand（保底容量）    │  ← 保证最低服务可用
+   │  70% Spot（弹性容量）         │  ← 成本节省60-80%
+   └─────────────────────────────┘
+
+2. 多实例类型+多AZ分散风险：
+   Pool 1: c5.xlarge  / us-east-1a
+   Pool 2: c5.2xlarge / us-east-1b
+   Pool 3: m5.xlarge  / us-east-1c
+   Pool 4: c6i.xlarge / us-east-1a
+   → 任一池被回收，其他池仍可用
+
+3. 中断处理：
+*/
+
+// HandleSpotInterruption Spot实例中断处理
+func HandleSpotInterruption(instanceID string) {
+    // AWS会提前2分钟发出中断通知
+    
+    // 1. 标记节点为不可调度
+    kubectl.CordonNode(instanceID)
+    
+    // 2. 优雅驱逐Pod（触发PreStop Hook）
+    kubectl.DrainNode(instanceID, 90*time.Second)
+    
+    // 3. 通知HPA立即扩容补充容量
+    notifyHPA("scale_up", 1)
+    
+    log.Infof("spot instance %s interrupted, drain completed", instanceID)
+}
+
+/*
+适用场景：
+✅ 无状态服务（API、Web、消息消费者）
+✅ 批处理任务（日志分析、数据ETL）
+✅ CI/CD构建节点
+✅ 开发/测试环境
+
+❌ 数据库（有状态、不可中断）
+❌ 核心支付链路（可用性要求极高）
+❌ 长时间运行的单体任务
+*/
+```
+
+#### 14.3.3 Reserved Instance / Savings Plans策略
+
+```
+Reserved Instance（RI）选购决策框架：
+
+Step 1: 分析基线负载
+  - 统计过去90天的最低资源使用量
+  - 这部分是"确定会用"的容量 → 适合RI
+
+Step 2: 选择承诺类型
+  ┌────────────────┬────────────┬────────────┬────────────┐
+  │    类型         │  折扣力度   │  灵活性     │  适用场景   │
+  ├────────────────┼────────────┼────────────┼────────────┤
+  │ 1年 标准RI      │  ~40%      │  低         │  稳定负载   │
+  │ 3年 标准RI      │  ~60%      │  很低       │  长期项目   │
+  │ 1年 可转换RI    │  ~30%      │  中         │  不确定规格  │
+  │ Savings Plans  │  ~35-45%   │  高         │  多服务混合  │
+  └────────────────┴────────────┴────────────┴────────────┘
+
+Step 3: 覆盖率目标
+  - 基线负载的80%用RI覆盖
+  - 剩余20%用On-Demand兜底
+  - 弹性部分用Spot
+
+最终成本结构示例：
+  基线容量（80台）：RI覆盖 → 月费$8,000（原价$20,000，节省60%）
+  弹性容量（0-40台）：Spot → 平均月费$2,000（原价$10,000，节省80%）
+  兜底容量（10台）：On-Demand → 月费$2,500
+  总计：$12,500/月（原价$32,500，整体节省62%）
+```
+
+```go
+// RI覆盖率监控
+type RICoverageMonitor struct {
+    cloudProvider CloudAPI
+}
+
+type CoverageReport struct {
+    TotalInstances    int
+    RICovered         int
+    SpotInstances     int
+    OnDemandInstances int
+    CoverageRate      float64 // RI覆盖率
+    WastedRI          int     // 未使用的RI数量
+    MonthlyCost       float64
+    PotentialSaving   float64
+}
+
+func (m *RICoverageMonitor) GenerateReport() *CoverageReport {
+    instances := m.cloudProvider.ListInstances()
+    ris := m.cloudProvider.ListReservedInstances()
+
+    report := &CoverageReport{}
+    for _, inst := range instances {
+        report.TotalInstances++
+        switch inst.PricingModel {
+        case "reserved":
+            report.RICovered++
+        case "spot":
+            report.SpotInstances++
+        default:
+            report.OnDemandInstances++
+        }
+    }
+
+    // 检查是否有未使用的RI
+    for _, ri := range ris {
+        if !ri.IsUtilized {
+            report.WastedRI++
+        }
+    }
+
+    report.CoverageRate = float64(report.RICovered) / float64(report.TotalInstances) * 100
+
+    // 如果覆盖率低于70%，计算潜在节省
+    if report.CoverageRate < 70 {
+        unconverted := report.OnDemandInstances - report.TotalInstances*20/100 // 保留20% OD
+        if unconverted > 0 {
+            report.PotentialSaving = float64(unconverted) * 150 // 每台每月可节省$150
+        }
+    }
+
+    return report
+}
+
+/*
+FinOps月度Review Checklist：
+□ RI利用率 > 95%（未使用的RI = 纯浪费）
+□ RI覆盖率 > 70%（基线负载应被RI覆盖）
+□ Spot中断率 < 5%（多池策略是否有效）
+□ 资源利用率 > 40%（低于40%需rightsize）
+□ 闲置资源清理（未使用的EBS、EIP、快照等）
+□ 数据传输成本（跨AZ/跨Region流量）
+*/
+```
+
+---
+
+## 15. 面试题自查
 
 以下问题按“从基础到治理、从技术到协同”的顺序组织，适合作为 SRE 面试系统自查清单。
 

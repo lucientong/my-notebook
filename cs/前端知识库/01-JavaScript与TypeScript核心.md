@@ -10,15 +10,16 @@
 3. [事件循环](#事件循环)
 4. [异步编程](#异步编程)
 5. [内存管理](#内存管理)
+6. [ES6+ 核心特性深入](#es6-核心特性深入)
 
 ### TypeScript 核心
-6. [类型系统](#类型系统)
-7. [高级类型](#高级类型)
-8. [工程实践](#工程实践)
+7. [类型系统](#类型系统)
+8. [高级类型](#高级类型)
+9. [工程实践](#工程实践)
 
 ### 自查与实战
-9. [面试题自查](#面试题自查)
-10. [实战案例](#实战案例)
+10. [面试题自查](#面试题自查)
+11. [实战案例](#实战案例)
 
 ---
 
@@ -1014,6 +1015,774 @@ v.y = 20;
 // ... 使用
 vectorPool.release(v); // 归还复用
 ```
+
+---
+
+### ES6+ 核心特性深入
+
+#### 1. Proxy 与 Reflect
+
+**原理说明**
+
+`Proxy` 用于创建对象的**代理层**，可拦截并自定义对象的基本操作（属性读取、赋值、函数调用等）。`Reflect` 是与 Proxy trap 一一对应的**静态方法集合**，提供了对象操作的默认行为，确保在自定义 trap 内能安全地执行原始操作。
+
+**设计哲学**：
+- Proxy 实现了"元编程"——在语言层面拦截和修改对象的默认行为
+- Reflect 将原本分散在 `Object`、`Function`、`delete` 等处的操作统一到一个命名空间
+- 两者配合使用，形成"拦截 + 转发"的标准范式
+
+**13 种 trap 一览**：
+
+| trap | 拦截操作 | Reflect 对应 |
+|------|----------|-------------|
+| `get` | 属性读取 | `Reflect.get` |
+| `set` | 属性赋值 | `Reflect.set` |
+| `has` | `in` 操作符 | `Reflect.has` |
+| `deleteProperty` | `delete` 操作 | `Reflect.deleteProperty` |
+| `ownKeys` | `Object.keys` / `for...in` | `Reflect.ownKeys` |
+| `getOwnPropertyDescriptor` | 属性描述符获取 | `Reflect.getOwnPropertyDescriptor` |
+| `defineProperty` | 定义属性 | `Reflect.defineProperty` |
+| `getPrototypeOf` | 原型获取 | `Reflect.getPrototypeOf` |
+| `setPrototypeOf` | 原型设置 | `Reflect.setPrototypeOf` |
+| `isExtensible` | 可扩展性检查 | `Reflect.isExtensible` |
+| `preventExtensions` | 阻止扩展 | `Reflect.preventExtensions` |
+| `apply` | 函数调用 | `Reflect.apply` |
+| `construct` | `new` 调用 | `Reflect.construct` |
+
+**代码示例：Vue3 响应式核心原理（简化版）**
+
+```javascript
+// ---------- 依赖收集系统 ----------
+let activeEffect = null;
+const targetMap = new WeakMap(); // target -> Map<key, Set<effect>>
+
+function track(target, key) {
+  if (!activeEffect) return;
+  let depsMap = targetMap.get(target);
+  if (!depsMap) {
+    depsMap = new Map();
+    targetMap.set(target, depsMap);
+  }
+  let deps = depsMap.get(key);
+  if (!deps) {
+    deps = new Set();
+    depsMap.set(key, deps);
+  }
+  deps.add(activeEffect);
+}
+
+function trigger(target, key) {
+  const depsMap = targetMap.get(target);
+  if (!depsMap) return;
+  const deps = depsMap.get(key);
+  if (deps) {
+    deps.forEach(effect => effect());
+  }
+}
+
+// ---------- 响应式代理 ----------
+function reactive(target) {
+  return new Proxy(target, {
+    get(target, key, receiver) {
+      track(target, key);                    // 读取时收集依赖
+      const result = Reflect.get(target, key, receiver);
+      // 深层代理：如果值是对象，递归转换
+      if (typeof result === 'object' && result !== null) {
+        return reactive(result);
+      }
+      return result;
+    },
+    set(target, key, value, receiver) {
+      const oldValue = target[key];
+      const result = Reflect.set(target, key, value, receiver);
+      if (oldValue !== value) {
+        trigger(target, key);                // 赋值时触发更新
+      }
+      return result;
+    },
+    deleteProperty(target, key) {
+      const hadKey = key in target;
+      const result = Reflect.deleteProperty(target, key);
+      if (hadKey && result) {
+        trigger(target, key);
+      }
+      return result;
+    }
+  });
+}
+
+// ---------- 副作用函数 ----------
+function effect(fn) {
+  activeEffect = fn;
+  fn(); // 首次执行，触发 get → track
+  activeEffect = null;
+}
+
+// ---------- 使用 ----------
+const state = reactive({ count: 0, user: { name: 'Alice' } });
+
+effect(() => {
+  console.log('count 变化:', state.count);
+});
+
+state.count++;   // 控制台输出: count 变化: 1
+state.count = 5; // 控制台输出: count 变化: 5
+```
+
+**面试考点**：
+- **Proxy vs Object.defineProperty**：Proxy 可拦截新增属性、数组下标变化、`delete` 操作，而 `Object.defineProperty` 不能，这就是 Vue3 比 Vue2 响应式更完善的根本原因
+- **为什么要用 `Reflect.get` 而不是 `target[key]`**：`Reflect.get` 能正确处理 `receiver`（代理链中的 this 指向），保证继承场景下行为正确
+- **手写题**：实现一个 `reactive` 函数，支持依赖收集和触发更新
+
+---
+
+#### 2. Symbol
+
+**原理说明**
+
+`Symbol` 是 ES6 引入的**第七种原始数据类型**。每个 Symbol 值都是唯一的，主要用于创建对象的非字符串属性键，避免属性名冲突。
+
+```javascript
+// ---- 基础：唯一性 ----
+const s1 = Symbol('description');
+const s2 = Symbol('description');
+console.log(s1 === s2); // false —— 描述相同但值不同
+
+// ---- Symbol.for：全局注册表（可复用） ----
+const s3 = Symbol.for('shared');
+const s4 = Symbol.for('shared');
+console.log(s3 === s4); // true —— 全局注册表中同一个
+
+// ---- 作为对象属性键 ----
+const ID = Symbol('id');
+const user = {
+  name: 'Alice',
+  [ID]: 12345   // Symbol 属性不会被常规遍历
+};
+
+console.log(user[ID]);              // 12345
+console.log(Object.keys(user));     // ['name'] —— Symbol 属性不可见
+console.log(Object.getOwnPropertySymbols(user)); // [Symbol(id)]
+console.log(Reflect.ownKeys(user)); // ['name', Symbol(id)]
+```
+
+**Well-known Symbols（内置 Symbol）**
+
+| Symbol | 用途 | 典型场景 |
+|--------|------|---------|
+| `Symbol.iterator` | 定义默认迭代器 | `for...of`、展开运算符 |
+| `Symbol.asyncIterator` | 定义异步迭代器 | `for await...of` |
+| `Symbol.hasInstance` | 自定义 `instanceof` | 类型判断定制 |
+| `Symbol.toPrimitive` | 对象转原始值 | `+obj`、模板字符串 |
+| `Symbol.toStringTag` | 自定义 `Object.prototype.toString` | 调试标识 |
+| `Symbol.species` | 派生对象的构造函数 | 子类化内置对象 |
+
+**代码示例：Symbol.iterator 实现可迭代协议**
+
+```javascript
+// 自定义区间对象，支持 for...of
+class Range {
+  constructor(start, end) {
+    this.start = start;
+    this.end = end;
+  }
+
+  [Symbol.iterator]() {
+    let current = this.start;
+    const end = this.end;
+    return {
+      next() {
+        if (current <= end) {
+          return { value: current++, done: false };
+        }
+        return { done: true };
+      }
+    };
+  }
+}
+
+const range = new Range(1, 5);
+for (const num of range) {
+  console.log(num); // 1, 2, 3, 4, 5
+}
+console.log([...range]); // [1, 2, 3, 4, 5]
+
+// Symbol.toPrimitive 定制类型转换
+class Money {
+  constructor(amount, currency) {
+    this.amount = amount;
+    this.currency = currency;
+  }
+
+  [Symbol.toPrimitive](hint) {
+    if (hint === 'number') return this.amount;
+    if (hint === 'string') return `${this.amount} ${this.currency}`;
+    return this.amount; // default
+  }
+}
+
+const price = new Money(99.9, 'CNY');
+console.log(+price);        // 99.9
+console.log(`${price}`);    // '99.9 CNY'
+console.log(price + 1);     // 100.9
+```
+
+**面试考点**：
+- Symbol 的唯一性保证和 `Symbol.for` 全局注册表的区别
+- `for...in` / `Object.keys` / `Object.getOwnPropertySymbols` / `Reflect.ownKeys` 对 Symbol 属性的可见性差异
+- 手写一个可迭代对象（实现 `Symbol.iterator`）
+
+---
+
+#### 3. Iterator 与 Generator
+
+**原理说明**
+
+**迭代器协议**：任何对象只要实现 `next()` 方法（返回 `{value, done}`），就是一个迭代器。
+**可迭代协议**：任何对象只要实现 `[Symbol.iterator]()` 方法（返回一个迭代器），就是可迭代对象。
+
+**Generator 函数**是一种特殊函数，使用 `function*` 声明，内部通过 `yield` 暂停执行、惰性产出值，天然满足迭代器协议。
+
+```javascript
+// ---- 手动实现迭代器 ----
+function createRangeIterator(start, end) {
+  let current = start;
+  return {
+    next() {
+      if (current <= end) {
+        return { value: current++, done: false };
+      }
+      return { value: undefined, done: true };
+    },
+    [Symbol.iterator]() { return this; } // 自身也是可迭代的
+  };
+}
+
+const iter = createRangeIterator(1, 3);
+console.log(iter.next()); // { value: 1, done: false }
+console.log(iter.next()); // { value: 2, done: false }
+console.log(iter.next()); // { value: 3, done: false }
+console.log(iter.next()); // { value: undefined, done: true }
+
+// ---- Generator 函数（等价但更简洁） ----
+function* rangeGenerator(start, end) {
+  for (let i = start; i <= end; i++) {
+    yield i;
+  }
+}
+
+for (const num of rangeGenerator(1, 5)) {
+  console.log(num); // 1, 2, 3, 4, 5
+}
+
+// ---- yield 的双向通信 ----
+function* conversation() {
+  const name = yield '你叫什么名字？';
+  const hobby = yield `你好 ${name}，你有什么爱好？`;
+  return `${name} 喜欢 ${hobby}`;
+}
+
+const talk = conversation();
+console.log(talk.next());          // { value: '你叫什么名字？', done: false }
+console.log(talk.next('Alice'));   // { value: '你好 Alice，你有什么爱好？', done: false }
+console.log(talk.next('编程'));    // { value: 'Alice 喜欢 编程', done: true }
+
+// ---- yield* 委托 ----
+function* inner() {
+  yield 'a';
+  yield 'b';
+}
+
+function* outer() {
+  yield 1;
+  yield* inner(); // 委托给另一个 generator
+  yield 2;
+}
+
+console.log([...outer()]); // [1, 'a', 'b', 2]
+```
+
+**异步 Generator：处理异步数据流**
+
+```javascript
+// 异步分页数据加载
+async function* fetchPages(baseUrl) {
+  let page = 1;
+  let hasMore = true;
+
+  while (hasMore) {
+    const response = await fetch(`${baseUrl}?page=${page}`);
+    const data = await response.json();
+    hasMore = data.hasMore;
+    page++;
+    yield data.items; // 每次 yield 一页数据
+  }
+}
+
+// 使用 for await...of 消费
+async function loadAll() {
+  const allItems = [];
+  for await (const items of fetchPages('/api/posts')) {
+    allItems.push(...items);
+    console.log(`已加载 ${allItems.length} 条`);
+  }
+  return allItems;
+}
+
+// 实战：可取消的轮询
+async function* poll(fn, interval) {
+  while (true) {
+    yield await fn();
+    await new Promise(resolve => setTimeout(resolve, interval));
+  }
+}
+
+async function startPolling() {
+  for await (const status of poll(() => fetch('/api/status').then(r => r.json()), 3000)) {
+    console.log('状态:', status);
+    if (status.completed) break; // 条件满足时退出
+  }
+}
+```
+
+**面试考点**：
+- 迭代器协议与可迭代协议的区别：`next()` vs `[Symbol.iterator]()`
+- Generator 的暂停/恢复机制是如何实现 async/await 的基础（co 库原理）
+- 手写题：用 Generator 实现一个惰性求值的无限序列（如斐波那契）
+- 异步 Generator 在流式数据处理中的应用
+
+---
+
+#### 4. WeakMap / WeakSet
+
+**原理说明**
+
+`WeakMap` 和 `WeakSet` 的核心特征是**弱引用**：它们不会阻止垃圾回收器回收键对象。当键对象没有其他引用时，对应的键值对会被自动清理。
+
+**与 Map/Set 的关键差异**：
+
+| 特性 | Map / Set | WeakMap / WeakSet |
+|------|-----------|-------------------|
+| 键类型 | 任意值 | 只能是对象（非 null） |
+| 引用类型 | 强引用 | 弱引用 |
+| 可遍历 | 是（`forEach`、`for...of`） | 否 |
+| `size` 属性 | 有 | 无 |
+| GC 行为 | 键存在即不回收 | 键无外部引用时自动回收 |
+
+**设计意图**：不可遍历 + 不可获取 size 是故意为之——因为 GC 时机不可预测，遍历结果不确定，暴露这些 API 会导致行为不一致。
+
+```javascript
+// ---- 弱引用 & GC 行为演示 ----
+let obj = { name: 'temp' };
+const wm = new WeakMap();
+wm.set(obj, '关联数据');
+
+console.log(wm.get(obj)); // '关联数据'
+console.log(wm.has(obj)); // true
+
+obj = null; // 移除唯一强引用
+// 此时 { name: 'temp' } 可被 GC 回收，wm 中的条目也会被自动清理
+// （GC 时机不确定，无法同步验证）
+```
+
+**实战场景 1：私有数据存储**
+
+```javascript
+// 比闭包方案更优雅——WeakMap 键是实例本身，实例被 GC 时私有数据自动清理
+const _private = new WeakMap();
+
+class User {
+  constructor(name, password) {
+    _private.set(this, {
+      password,                        // 外部完全无法访问
+      loginAttempts: 0,
+    });
+    this.name = name;                  // 公开属性
+  }
+
+  checkPassword(input) {
+    const data = _private.get(this);
+    data.loginAttempts++;
+    return input === data.password;
+  }
+
+  getLoginAttempts() {
+    return _private.get(this).loginAttempts;
+  }
+}
+
+const user = new User('Alice', 'secret123');
+console.log(user.name);                    // 'Alice'
+console.log(user.checkPassword('wrong'));  // false
+console.log(user.checkPassword('secret123')); // true
+console.log(user.getLoginAttempts());      // 2
+// user.password → undefined，无法直接访问
+```
+
+**实战场景 2：DOM 关联数据（避免内存泄漏）**
+
+```javascript
+const elementData = new WeakMap();
+
+function bindData(element, data) {
+  elementData.set(element, data);
+}
+
+function getData(element) {
+  return elementData.get(element);
+}
+
+// 使用
+const btn = document.querySelector('#myBtn');
+bindData(btn, { clickCount: 0, bindTime: Date.now() });
+
+btn.addEventListener('click', () => {
+  const data = getData(btn);
+  data.clickCount++;
+  console.log(`点击次数: ${data.clickCount}`);
+});
+
+// 当 btn 从 DOM 移除且无其他引用时，关联数据自动随 GC 清理
+// 如果用 Map，即使 DOM 移除，Map 中的强引用会导致内存泄漏
+
+// ---- WeakSet 场景：标记已处理对象 ----
+const processed = new WeakSet();
+
+function processNode(node) {
+  if (processed.has(node)) return; // 跳过已处理
+  processed.add(node);
+  // ... 执行处理逻辑
+}
+```
+
+**面试考点**：
+- WeakMap 的键为什么只能是对象？（原始值没有"引用"概念，无法被弱引用追踪）
+- WeakMap 为什么不可遍历？（GC 时机不确定，遍历结果不可预测）
+- 与闭包方案相比，WeakMap 实现私有数据的优势（实例 GC 时私有数据自动释放）
+- Vue3 的 `targetMap` 为什么用 WeakMap（响应式对象被销毁时自动释放依赖关系）
+
+---
+
+#### 5. Promise 高级
+
+**手写 Promise.all**
+
+```javascript
+Promise.myAll = function(promises) {
+  return new Promise((resolve, reject) => {
+    const results = [];
+    let count = 0;
+    const iterable = Array.from(promises); // 支持任意可迭代对象
+
+    if (iterable.length === 0) {
+      resolve(results);
+      return;
+    }
+
+    iterable.forEach((promise, index) => {
+      Promise.resolve(promise).then(
+        value => {
+          results[index] = value;    // 保证顺序
+          count++;
+          if (count === iterable.length) {
+            resolve(results);
+          }
+        },
+        reason => reject(reason)     // 快速失败
+      );
+    });
+  });
+};
+```
+
+**手写 Promise.race**
+
+```javascript
+Promise.myRace = function(promises) {
+  return new Promise((resolve, reject) => {
+    const iterable = Array.from(promises);
+    // 第一个 settled 的决定结果
+    iterable.forEach(promise => {
+      Promise.resolve(promise).then(resolve, reject);
+    });
+  });
+};
+```
+
+**手写 Promise.allSettled**
+
+```javascript
+Promise.myAllSettled = function(promises) {
+  return new Promise((resolve) => {
+    const results = [];
+    let count = 0;
+    const iterable = Array.from(promises);
+
+    if (iterable.length === 0) {
+      resolve(results);
+      return;
+    }
+
+    iterable.forEach((promise, index) => {
+      Promise.resolve(promise).then(
+        value => {
+          results[index] = { status: 'fulfilled', value };
+        },
+        reason => {
+          results[index] = { status: 'rejected', reason };
+        }
+      ).finally(() => {
+        count++;
+        if (count === iterable.length) {
+          resolve(results);
+        }
+      });
+    });
+  });
+};
+
+// 验证
+Promise.myAllSettled([
+  Promise.resolve(1),
+  Promise.reject('error'),
+  Promise.resolve(3)
+]).then(console.log);
+// [
+//   { status: 'fulfilled', value: 1 },
+//   { status: 'rejected', reason: 'error' },
+//   { status: 'fulfilled', value: 3 }
+// ]
+```
+
+**async/await 错误处理最佳实践**
+
+```javascript
+// ❌ 反模式1：空 catch（吞掉错误）
+async function bad1() {
+  try {
+    await riskyOperation();
+  } catch (e) {
+    // 什么都不做
+  }
+}
+
+// ❌ 反模式2：每个 await 都 try/catch（过度冗余）
+async function bad2() {
+  let user, posts;
+  try { user = await fetchUser(); } catch (e) { /* ... */ }
+  try { posts = await fetchPosts(); } catch (e) { /* ... */ }
+}
+
+// ✅ 最佳实践1：统一 try/catch + 错误分类
+async function fetchData() {
+  try {
+    const user = await fetchUser();
+    const posts = await fetchPosts(user.id);
+    return { user, posts };
+  } catch (error) {
+    if (error instanceof NetworkError) {
+      // 网络错误：重试
+      return fetchData(); // 注意添加重试上限
+    }
+    if (error instanceof AuthError) {
+      // 认证错误：跳转登录
+      redirectToLogin();
+      return;
+    }
+    // 未知错误：上报
+    reportError(error);
+    throw error;
+  }
+}
+
+// ✅ 最佳实践2：Go 风格的 tuple 包装
+async function to(promise) {
+  try {
+    const data = await promise;
+    return [null, data];
+  } catch (error) {
+    return [error, null];
+  }
+}
+
+// 使用——无需 try/catch，逻辑更扁平
+async function loadDashboard() {
+  const [userErr, user] = await to(fetchUser());
+  if (userErr) {
+    console.error('获取用户失败:', userErr);
+    return;
+  }
+
+  const [postsErr, posts] = await to(fetchPosts(user.id));
+  if (postsErr) {
+    console.error('获取帖子失败:', postsErr);
+    return;
+  }
+
+  render({ user, posts });
+}
+
+// ✅ 最佳实践3：Promise 并发的错误隔离
+async function loadPage() {
+  // allSettled 保证一个失败不会影响其他
+  const [userResult, postsResult, configResult] = await Promise.allSettled([
+    fetchUser(),
+    fetchPosts(),
+    fetchConfig()
+  ]);
+
+  return {
+    user: userResult.status === 'fulfilled' ? userResult.value : null,
+    posts: postsResult.status === 'fulfilled' ? postsResult.value : [],
+    config: configResult.status === 'fulfilled' ? configResult.value : defaultConfig
+  };
+}
+```
+
+**面试考点**：
+- 手写 `Promise.all`：注意空数组直接 resolve、`Promise.resolve()` 包装非 Promise 值、index 保序
+- `Promise.all` vs `Promise.allSettled` 的错误处理差异
+- async/await 中未捕获的 rejection 会变成 `unhandledrejection` 事件
+- Go 风格 `to()` 工具函数的优缺点（优：扁平；缺：失去类型推断，需手动类型断言）
+
+---
+
+#### 6. 模块系统
+
+**原理说明**
+
+JavaScript 模块经历了从无到有的演进：全局污染 → IIFE → CommonJS (CJS) → AMD → ES Modules (ESM)。当前主流是 **ESM**（浏览器原生支持）和 **CJS**（Node.js 传统方案）。
+
+**ESM vs CJS 核心对比**：
+
+| 特性 | ESM (`import/export`) | CJS (`require/module.exports`) |
+|------|----------------------|-------------------------------|
+| 加载时机 | 编译时（静态分析） | 运行时（动态执行） |
+| 绑定方式 | 活绑定（live binding） | 值拷贝（snapshot） |
+| 顶层 `this` | `undefined` | `module.exports` |
+| 异步加载 | 原生支持（`import()`） | 同步（阻塞式） |
+| Tree Shaking | 支持 | 不支持 |
+| 循环依赖 | 通过活绑定处理 | 可能拿到不完整的导出 |
+
+```javascript
+// ---- ESM：活绑定（live binding）----
+// counter.mjs
+export let count = 0;
+export function increment() { count++; }
+
+// main.mjs
+import { count, increment } from './counter.mjs';
+console.log(count);   // 0
+increment();
+console.log(count);   // 1 ← 读取的是"绑定"，能看到变化
+
+// ---- CJS：值拷贝 ----
+// counter.js
+let count = 0;
+module.exports = { count, increment() { count++; } };
+
+// main.js
+const { count, increment } = require('./counter.js');
+console.log(count);   // 0
+increment();
+console.log(count);   // 0 ← 拷贝值，不会变化（除非导出 getter）
+```
+
+**动态 import()：按需加载**
+
+```javascript
+// ---- 路由级懒加载（React） ----
+import { lazy, Suspense } from 'react';
+
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const Settings = lazy(() => import('./pages/Settings'));
+
+function App() {
+  return (
+    <Suspense fallback={<Loading />}>
+      <Routes>
+        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/settings" element={<Settings />} />
+      </Routes>
+    </Suspense>
+  );
+}
+
+// ---- 条件加载（功能检测） ----
+async function loadPolyfill() {
+  if (!window.IntersectionObserver) {
+    await import('intersection-observer');
+  }
+}
+
+// ---- 动态加载国际化资源 ----
+async function loadLocale(lang) {
+  const module = await import(`./locales/${lang}.js`);
+  return module.default; // 动态 import 返回模块命名空间对象
+}
+```
+
+**Tree Shaking 原理**
+
+Tree Shaking 依赖 ESM 的**静态结构**，在打包阶段移除未使用的导出。
+
+```javascript
+// math.js
+export function add(a, b) { return a + b; }
+export function multiply(a, b) { return a * b; }
+export function divide(a, b) { return a / b; }   // 未被使用
+
+// app.js
+import { add, multiply } from './math.js';
+// divide 未导入 → Tree Shaking 后从产物中移除
+
+console.log(add(1, 2));
+console.log(multiply(3, 4));
+```
+
+**Tree Shaking 失效的常见原因**：
+
+```javascript
+// ❌ 副作用导致无法 shake
+// utils.js
+export function pureFunc() { return 42; }
+console.log('模块加载了！');  // 副作用 → 打包器不敢移除整个模块
+
+// ❌ 对象解构导出（无法静态分析具体使用了哪些属性）
+const utils = {
+  add(a, b) { return a + b; },
+  multiply(a, b) { return a * b; }
+};
+export default utils;
+
+// 消费方
+import utils from './utils';
+utils.add(1, 2);
+// multiply 虽然没用，但打包器无法确定是否通过 utils[dynamicKey] 访问
+
+// ✅ 推荐：具名导出
+export function add(a, b) { return a + b; }
+export function multiply(a, b) { return a * b; }
+```
+
+**package.json 的 `sideEffects` 字段**：
+
+```json
+{
+  "name": "my-library",
+  "sideEffects": false,
+  "sideEffects": ["*.css", "*.scss", "./src/polyfill.js"]
+}
+```
+
+- `false`：声明整个包无副作用，打包器可大胆 Tree Shake
+- 数组：声明有副作用的文件列表，其余可安全移除
+
+**面试考点**：
+- ESM 的活绑定 vs CJS 的值拷贝在循环依赖场景下的区别
+- `import()` 返回的是什么？（返回 Promise，resolve 值是模块命名空间对象）
+- Tree Shaking 为什么只能用 ESM？（需要编译时确定的静态结构，CJS 的 `require` 可以出现在 `if` 语句中，无法静态分析）
+- `sideEffects: false` 的作用和风险（如果模块确实有副作用会被错误移除）
 
 ---
 
