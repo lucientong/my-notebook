@@ -4160,3 +4160,23 @@ class SimpleEditor {
 > 2. 重点掌握 Fetch + AbortController、Web Worker、Service Worker 的实战应用
 > 3. 理解各 API 的浏览器兼容性，能给出降级方案
 > 4. 面试时能画出 Service Worker 生命周期图、WebRTC 信令流程图
+
+### 开放式设计题
+
+**D1：设计一个支持离线使用的PWA应用（如笔记应用），数据同步策略怎么做？**
+
+**参考思路**：
+- 离线存储：IndexedDB存笔记内容（结构化数据）、Cache API缓存静态资源
+- Service Worker：Stale-While-Revalidate策略（先返回缓存再后台更新）
+- 冲突解决：乐观锁（版本号）+ Last-Write-Wins或CRDTs（无冲突复制数据类型）
+- 同步时机：navigator.onLine检测网络恢复 → Background Sync API排队同步 → 失败重试
+- 用户体验：离线状态提示、同步进度指示、冲突手动合并UI
+
+**D2：Web Worker中进行大量计算导致主线程Transferable Object传输开销大，如何优化？**
+
+**参考思路**：
+- Transferable Objects：ArrayBuffer/MessagePort/OffscreenCanvas的所有权转移（零拷贝）
+- SharedArrayBuffer + Atomics：多Worker共享内存，无需传输，但需要COOP/COEP Headers
+- 计算分片：将大任务拆成多个小任务，每帧只传输增量结果
+- Worker池化：复用Worker实例避免创建销毁开销，任务队列分发
+- 方案选择：数据量<1MB用结构化克隆、>1MB用Transferable、需要频繁读写用SharedArrayBuffer

@@ -4946,6 +4946,26 @@ const handleChange = (e) => {
 
 高质量策略重点是“隔离影响面 + 可观测 + 可恢复”。
 
+### 开放式设计题
+
+**D1：设计一个支持10万行数据渲染的React表格组件，性能如何保证？**
+
+**参考思路**：
+- 虚拟滚动：只渲染可视区域的行（react-window/react-virtualized），DOM节点控制在50-100个
+- 列虚拟化：宽表同样只渲染可视列，水平滚动时动态替换
+- 渲染优化：React.memo逐行memo、useMemo缓存计算、避免Context导致全表重渲染
+- 排序/筛选：Web Worker中执行大数据排序，主线程不阻塞
+- 关键取舍：虚拟滚动牺牲了Ctrl+F浏览器搜索能力，需要自建搜索功能
+
+**D2：React应用首屏白屏时间从0.8s劣化到3s，如何系统排查和优化？**
+
+**参考思路**：
+- 度量：Lighthouse/WebPageTest确认LCP指标、Performance面板看Long Task
+- JS层面：Bundle分析（webpack-bundle-analyzer）→ 找到大依赖 → Code Splitting/懒加载
+- 网络层面：资源加载瀑布图 → 关键CSS内联 → preload关键资源 → 图片懒加载
+- 渲染层面：SSR/Streaming替代CSR、Skeleton屏骨架、React.lazy + Suspense
+- 监控回归：Performance Budget + CI中Lighthouse跑分卡门
+
 ---
 
 ## 15. 企业级实战案例

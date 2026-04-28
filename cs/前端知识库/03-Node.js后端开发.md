@@ -1791,6 +1791,26 @@ const esm = await import('./es-module.mjs');
 
 配置事故很常见，治理重点是“可观测 + 可回退 + 可审计”。
 
+### 开放式设计题
+
+**D1：设计一个Node.js实现的高并发API网关，如何处理10000+ QPS？**
+
+**参考思路**：
+- 事件循环优化：避免同步操作阻塞EventLoop、CPU密集任务交给Worker Threads
+- 连接管理：HTTP Keep-Alive + 连接池复用、上游请求超时严格控制
+- 限流熔断：令牌桶限流（per-route配置）、Circuit Breaker（opossum库）
+- 集群部署：PM2 Cluster Mode（多进程利用多核）、Nginx负载均衡前置
+- 缓存策略：路由级响应缓存（Redis）、频繁鉴权结果本地LRU缓存
+- 关键指标：EventLoop Lag < 50ms、P99 < 100ms、内存RSS不持续增长
+
+**D2：Node.js服务线上出现EventLoop阻塞（响应延迟飙升），如何定位？**
+
+**参考思路**：
+- 确认阻塞：监控Event Loop Lag（perf_hooks.monitorEventLoopDelay）、超过100ms告警
+- 定位：--prof生成V8 CPU Profile → 找到耗时函数、clinic.js工具（clinic flame/doctor）
+- 常见原因：正则回溯（ReDoS）、大JSON序列化、同步文件读写、加密运算在主线程
+- 解决：Worker Threads处理CPU密集、流式处理大数据（Stream API）、微任务拆分（setImmediate）
+
 ---
 
 ## 13. 实战案例

@@ -2044,6 +2044,27 @@ HTTP/1.1 vs HTTP/2：
 
 ---
 
+### 开放式设计题
+
+**D1：设计一个前端安全防护体系（防XSS/CSRF/点击劫持等），从编码到部署全链路怎么做？**
+
+**参考思路**：
+- 编码层：输入验证（白名单）+ 输出编码（DOMPurify/HTML实体转义）+ CSP策略（script-src限制）
+- 传输层：全站HTTPS + HSTS + Cookie Secure/HttpOnly/SameSite=Strict
+- 框架层：React默认转义（dangerouslySetInnerHTML审计）、CSRF Token自动注入、X-Frame-Options
+- CI层：ESLint安全规则 + 依赖漏洞扫描（npm audit/Snyk）+ SAST静态分析
+- 监控层：CSP Report-URI收集违规报告、异常请求模式检测、XSS蜜罐页面
+
+**D2：用户反馈"页面操作后卡顿明显"，但你本地无法复现，如何远程诊断？**
+
+**参考思路**：
+- 采集数据：Performance Observer API自动采集Long Task（>50ms）→ 上报到监控平台
+- 还原现场：用户设备信息（低端机？）、网络环境、操作路径录屏（rrweb）
+- 分析维度：是JS执行慢（Long Task）还是渲染慢（Layout Thrashing）还是网络慢
+- 针对性优化：低端设备降级策略（减少动画/虚拟滚动）、Web Worker分担计算、requestIdleCallback延迟非关键任务
+
+---
+
 ## 总结
 
 浏览器原理和Web安全是前端面试的重点，需要深入理解：

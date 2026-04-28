@@ -2722,6 +2722,25 @@ const boundGreet = greet.myBind(obj, 'Hey');
 boundGreet('~'); // 'Hey, Alice~'
 ```
 
+### 开放式设计题
+
+**D1：设计一个支持插件化扩展的前端SDK（类似埋点SDK），核心架构怎么考虑？**
+
+**参考思路**：
+- 核心架构：微内核+插件体系，Core只负责生命周期管理和事件总线，功能通过Plugin注入
+- 插件协议：统一的Plugin接口（install/uninstall/name），Hook机制（beforeSend/afterSend）
+- 数据管道：采集→队列缓冲→批量上报→失败重试，requestIdleCallback不阻塞主线程
+- TypeScript设计：泛型约束插件类型、Declaration Merging扩展Core类型、严格的事件类型定义
+- 关键取舍：包体积（Tree Shaking按需加载插件）vs 功能完整性，同步初始化 vs 异步懒加载
+
+**D2：项目中发现一个闭包导致的内存泄漏，但无法复现，你的排查策略是什么？**
+
+**参考思路**：
+- 工具链：Chrome DevTools Memory Tab → Heap Snapshot对比（操作前后差异）→ Allocation Timeline定位
+- 常见闭包泄漏：事件监听器未移除（addEventListener without removeEventListener）、定时器引用DOM、React useEffect未清理
+- 排查步骤：Detached DOM Tree检查 → Retainer Path追溯引用链 → WeakRef/WeakMap替代强引用
+- 预防：ESLint规则检测（react-hooks/exhaustive-deps）、CI中跑Puppeteer内存回归测试
+
 ---
 
 ## 实战案例

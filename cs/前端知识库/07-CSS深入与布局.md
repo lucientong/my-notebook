@@ -3221,3 +3221,22 @@ export const button = style({
 ---
 
 > **复习建议**：盒模型、BFC、Flex 是最高频考点，建议能手写代码。Grid 和现代特性是加分项。响应式和动画性能在实际项目中非常重要，需要结合实践理解。
+
+### 开放式设计题
+
+**D1：设计一个支持主题切换（亮/暗/自定义品牌色）的CSS架构，如何做到零运行时成本？**
+
+**参考思路**：
+- CSS变量体系：全局定义--color-primary/--color-bg等语义化变量，组件只引用变量不写死色值
+- 主题切换：html[data-theme="dark"]下覆盖变量值，切换只需修改属性，浏览器自动重绘
+- 零运行时：纯CSS实现（prefers-color-scheme媒体查询+属性选择器），无需JS运行时计算
+- 品牌定制：CSS变量动态注入（style.setProperty）、构建时生成多份主题CSS、按需加载
+- 关键注意：第三方组件库（antd/MUI）的主题穿透、图片/图标的暗色适配
+
+**D2：一个复杂布局在iOS Safari上表现异常（底部被遮挡/弹窗无法滚动），如何排查？**
+
+**参考思路**：
+- 常见iOS坑：100vh包含地址栏（用dvh/svh代替）、position:fixed在软键盘弹起时失效、-webkit-overflow-scrolling:touch的副作用
+- 安全区域：env(safe-area-inset-bottom)处理刘海屏底部
+- 弹窗滚动穿透：body加overflow:hidden + position:fixed、记录并恢复scrollTop
+- 调试：iOS Safari远程调试（Mac Safari→开发→iPhone）、BrowserStack远程真机
