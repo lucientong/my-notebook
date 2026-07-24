@@ -1,6 +1,6 @@
 # 📚 计算机科学知识库
 
-> 一套系统化的计算机科学知识体系，涵盖后端开发、前端开发、AI/LLM、算法与数据结构、行业专项、Web3/区块链、处理器架构七大板块，共 **61 篇文档、约 120,000+ 行**。每篇文档均包含核心原理、代码示例、常见面试题和实战案例。
+> 一套系统化的计算机科学知识体系，涵盖后端开发、前端开发、AI/LLM、算法与数据结构、行业专项、Web3/区块链、处理器架构七大板块，并已完成后端、前端、AI、算法、Web3、专项英文镜像，方便准备外企面试。每篇文档均包含核心原理、代码示例、常见面试题和实战案例。
 
 ---
 
@@ -8,19 +8,27 @@
 
 | 板块 | 文件数 | 内容规模 | 核心定位 |
 |------|--------|---------|---------|
-| [后端知识库](#-后端知识库19篇) | 19 | ~30,000 行 | 编程语言、数据库、中间件、架构设计、认证授权、API治理、设计模式、ES搜索 |
+| [后端知识库](#-后端知识库19篇--导航) | 19 + 导航 | ~50,000+ 行 | 编程语言、数据库、中间件、架构设计、认证授权、API治理、设计模式、ES搜索 |
+| [Backend Knowledge Base](#-backend-knowledge-baseenglish-mirror) | README + 19 | 已完成镜像 | 英文后端知识库，按中文 01-19 编号镜像，已补充资深面试 Q&A |
 | [前端知识库](#-前端知识库10篇) | 10 | ~24,000 行 | JS/TS、React、浏览器原理、工程化、CSS、Web API、性能优化、跨端开发 |
+| [Frontend Knowledge Base](#-frontend-knowledge-baseenglish-mirror) | README + 10 | 已完成镜像 | 英文前端知识库，按中文 01-10 编号镜像，已补充生产场景与资深追问 |
 | [AI知识库](#-ai知识库9篇--导航) | 9 | ~10,500 行 | AI 入门、LLM、Agent、MCP、模型训练、推荐模型、Claude、多模态、AI安全 |
+| [AI Knowledge Base](#-ai-knowledge-baseenglish-mirror) | README + 9 | 已完成镜像 | 英文 AI 知识库，按中文 00-08 编号镜像，已补充资深 Q&A |
 | [算法与数据结构](#-算法与数据结构3篇) | 3 | ~10,600 行 | 数据结构、经典算法、系统设计面试、LeetCode刷题指南 |
+| [Algorithms and Data Structures](#-algorithms-and-data-structuresenglish-mirror) | README + 3 | 已完成镜像 | 英文算法与系统设计面试知识库，覆盖 Go + Python 代码表达 |
 | [专项知识库](#-专项知识库10篇) | 10 | ~22,000 行 | 游戏后台、金融支付、SRE、IaaS、推荐系统、电商、IM社交、搜索系统 |
+| [Specialized Knowledge Base](#-specialized-knowledge-baseenglish-mirror) | README + 4 | 已完成镜像 | 英文专项知识库，覆盖 03-06 Linux/SRE/Testing/IaaS 专项镜像 |
 | [Web3知识库](#-web3知识库7篇--导航) | 7 | ~6,000 行 | Web3 入门、区块链、智能合约、DeFi、Rust、Layer2 |
+| [Web3 Knowledge Base](#-web3-knowledge-baseenglish-mirror) | README + 7 | 已完成镜像 | 英文 Web3 知识库，按中文 00-06 编号镜像，用于协议/合约/基础设施英文面试 |
 | [处理器架构知识库](#-处理器架构知识库6篇) | 6 | ~4,200 行 | x86/ARM/GPU/AI加速、异构计算 |
 
 ---
 
-## 🔧 后端知识库（19篇）
+## 🔧 后端知识库（19篇 + 导航）
 
 后端开发的核心知识体系，按"**语言 → 基础设施 → 架构 → 数据 → 工程实践**"逻辑编排。
+
+建议先看 [README](./后端知识库/README.md)。这里补了阅读顺序、难度分层、主栈路线、系统设计路线和外企英文面试冲刺路线，适合作为后端知识库入口。
 
 | # | 文件 | 核心内容 | 规模 |
 |---|------|---------|------|
@@ -55,6 +63,38 @@
 
 ---
 
+## 🌐 Backend Knowledge Base（English Mirror）
+
+英文后端知识库与中文 `后端知识库` 保持 01-19 编号一一对应，目标是把中文知识体系整理成适合外企技术面试表达的英文版本。
+
+入口：[README](./backend-knowledge-base/README.md)
+
+| # | File | Source | Status |
+|---|------|--------|--------|
+| 01 | [Go In Depth](./backend-knowledge-base/01-Go-In-Depth.md) | [Go语言深入](./后端知识库/01-Go语言深入.md) | Done |
+| 02 | [MySQL In Depth](./backend-knowledge-base/02-MySQL-In-Depth.md) | [MySQL深入](./后端知识库/02-MySQL深入.md) | Done |
+| 03 | [Python Development](./backend-knowledge-base/03-Python-Development.md) | [Python开发](./后端知识库/03-Python开发.md) | Done |
+| 04 | [Java In Depth](./backend-knowledge-base/04-Java-In-Depth.md) | [Java深入](./后端知识库/04-Java深入.md) | Done |
+| 05 | [Concurrency Programming Models](./backend-knowledge-base/05-Concurrency-Programming-Models.md) | [并发编程模型](./后端知识库/05-并发编程模型.md) | Done |
+| 06 | [Networking Fundamentals and Protocols](./backend-knowledge-base/06-Networking-Fundamentals-and-Protocols.md) | [网络基础与协议](./后端知识库/06-网络基础与协议.md) | Done |
+| 07 | [Redis and Caching](./backend-knowledge-base/07-Redis-and-Caching.md) | [Redis与缓存](./后端知识库/07-Redis与缓存.md) | Done |
+| 08 | [Message Queues](./backend-knowledge-base/08-Message-Queues.md) | [消息队列](./后端知识库/08-消息队列.md) | Done |
+| 09 | [System Design and Architecture](./backend-knowledge-base/09-System-Design-and-Architecture.md) | [系统设计与架构](./后端知识库/09-系统设计与架构.md) | Done |
+| 10 | [Databases Comprehensive](./backend-knowledge-base/10-Databases-Comprehensive.md) | [数据库综合](./后端知识库/10-数据库综合.md) | Done |
+| 11 | [Cloud Native and Containers](./backend-knowledge-base/11-Cloud-Native-and-Containers.md) | [云原生与容器](./后端知识库/11-云原生与容器.md) | Done |
+| 12 | [Microservices Architecture](./backend-knowledge-base/12-Microservices-Architecture.md) | [微服务架构](./后端知识库/12-微服务架构.md) | Done |
+| 13 | [Operating Systems In Depth](./backend-knowledge-base/13-Operating-Systems-In-Depth.md) | [操作系统深入](./后端知识库/13-操作系统深入.md) | Done |
+| 14 | [Big Data Processing Fundamentals](./backend-knowledge-base/14-Big-Data-Processing-Fundamentals.md) | [大数据处理基础](./后端知识库/14-大数据处理基础.md) | Done |
+| 15 | [C++ System Programming](./backend-knowledge-base/15-Cpp-System-Programming.md) | [C++系统编程](./后端知识库/15-C++系统编程.md) | Done |
+| 16 | [Authentication and Authorization](./backend-knowledge-base/16-Authentication-and-Authorization.md) | [认证授权专题](./后端知识库/16-认证授权专题.md) | Done |
+| 17 | [API Design and Governance](./backend-knowledge-base/17-API-Design-and-Governance.md) | [API设计与治理](./后端知识库/17-API设计与治理.md) | Done |
+| 18 | [Design Patterns and Programming Paradigms](./backend-knowledge-base/18-Design-Patterns-and-Programming-Paradigms.md) | [设计模式与编程范式](./后端知识库/18-设计模式与编程范式.md) | Done |
+| 19 | [Elasticsearch Search Engine](./backend-knowledge-base/19-Elasticsearch-Search-Engine.md) | [Elasticsearch搜索引擎](./后端知识库/19-Elasticsearch搜索引擎.md) | Done |
+
+英文后端知识库已完成 01-19 全量镜像，并已补充资深面试 Q&A，覆盖系统设计追问、工程权衡和生产问题排查表达。
+
+---
+
 ## 🌐 前端知识库（10篇）
 
 现代前端开发全景，从语言基础到框架深入再到工程化体系和跨端开发。
@@ -77,6 +117,29 @@
 ### 📌 交叉引用说明
 
 - **微前端**：`02-React框架深入` Section 16 摘要指向 → `06-前端框架与工程化综合` 的完整微前端讲解
+
+---
+
+## 🌐 Frontend Knowledge Base（English Mirror）
+
+英文前端知识库与中文 `前端知识库` 保持 01-10 编号一一对应，目标是把前端机制、工程化取舍、性能与安全实践整理成适合外企前端/全栈面试表达的英文版本。
+
+入口：[README](./frontend-knowledge-base/README.md)
+
+| # | File | Source | Status |
+|---|------|--------|--------|
+| 01 | [JavaScript and TypeScript Core](./frontend-knowledge-base/01-JavaScript-and-TypeScript-Core.md) | [JavaScript与TypeScript核心](./前端知识库/01-JavaScript与TypeScript核心.md) | Done |
+| 02 | [React Framework In Depth](./frontend-knowledge-base/02-React-Framework-In-Depth.md) | [React框架深入](./前端知识库/02-React框架深入.md) | Done |
+| 03 | [Node.js Backend Development](./frontend-knowledge-base/03-Nodejs-Backend-Development.md) | [Node.js后端开发](./前端知识库/03-Node.js后端开发.md) | Done |
+| 04 | [Nginx and Web Servers](./frontend-knowledge-base/04-Nginx-and-Web-Servers.md) | [Nginx与Web服务器](./前端知识库/04-Nginx与Web服务器.md) | Done |
+| 05 | [Browser Internals and Web Security](./frontend-knowledge-base/05-Browser-Internals-and-Web-Security.md) | [浏览器原理与Web安全](./前端知识库/05-浏览器原理与Web安全.md) | Done |
+| 06 | [Frontend Frameworks and Engineering](./frontend-knowledge-base/06-Frontend-Frameworks-and-Engineering.md) | [前端框架与工程化综合](./前端知识库/06-前端框架与工程化综合.md) | Done |
+| 07 | [CSS In Depth and Layout](./frontend-knowledge-base/07-CSS-In-Depth-and-Layout.md) | [CSS深入与布局](./前端知识库/07-CSS深入与布局.md) | Done |
+| 08 | [HTML5 and Web APIs](./frontend-knowledge-base/08-HTML5-and-Web-APIs.md) | [HTML5与Web API](./前端知识库/08-HTML5与Web%20API.md) | Done |
+| 09 | [Frontend Performance Optimization](./frontend-knowledge-base/09-Frontend-Performance-Optimization.md) | [前端性能优化](./前端知识库/09-前端性能优化.md) | Done |
+| 10 | [Mobile and Cross-platform Development](./frontend-knowledge-base/10-Mobile-and-Cross-Platform-Development.md) | [移动端与跨端开发](./前端知识库/10-移动端与跨端开发.md) | Done |
+
+英文前端知识库已完成 01-10 全量镜像，并已补充资深追问、性能安全权衡和生产场景表达。
 
 ---
 
@@ -106,6 +169,28 @@ LLM时代的AI工程师必备知识，从原理到落地。
 
 ---
 
+## 🌐 AI Knowledge Base（English Mirror）
+
+英文 AI 知识库与中文 `AI知识库` 保持 00-08 编号一一对应，面向 AI 应用、Agent 平台、模型训练、推荐、多模态与安全方向的英文技术面试。
+
+入口：[README](./ai-knowledge-base/README.md)
+
+| # | File | Source | Status |
+|---|------|--------|--------|
+| 00 | [AI Overview and Learning Path](./ai-knowledge-base/00-AI-Overview-and-Learning-Path.md) | [AI入门与全景认知](./AI知识库/00-AI入门与全景认知.md) | Done |
+| 01 | [LLM and Agent Fundamentals](./ai-knowledge-base/01-LLM-and-Agent-Fundamentals.md) | [LLM与Agent基础](./AI知识库/01-LLM与Agent基础.md) | Done |
+| 02 | [MCP and Tool Integration](./ai-knowledge-base/02-MCP-and-Tool-Integration.md) | [MCP与工具集成](./AI知识库/02-MCP与工具集成.md) | Done |
+| 03 | [AI Engineering Practices](./ai-knowledge-base/03-AI-Engineering-Practices.md) | [AI工程化实践](./AI知识库/03-AI工程化实践.md) | Done |
+| 04 | [AI Model Training and Optimization](./ai-knowledge-base/04-AI-Model-Training-and-Optimization.md) | [AI模型训练与优化](./AI知识库/04-AI模型训练与优化.md) | Done |
+| 05 | [Recommendation Models and Training](./ai-knowledge-base/05-Recommendation-Models-and-Training.md) | [推荐模型与训练](./AI知识库/05-推荐模型与训练.md) | Done |
+| 06 | [Claude Architect Certification Knowledge System](./ai-knowledge-base/06-Claude-Architect-Certification-Knowledge-System.md) | [Claude架构师认证知识体系](./AI知识库/06-Claude架构师认证知识体系.md) | Done |
+| 07 | [Multimodal and Vision AI](./ai-knowledge-base/07-Multimodal-and-Vision-AI.md) | [多模态与视觉AI](./AI知识库/07-多模态与视觉AI.md) | Done |
+| 08 | [AI Safety and Alignment](./ai-knowledge-base/08-AI-Safety-and-Alignment.md) | [AI安全与对齐](./AI知识库/08-AI安全与对齐.md) | Done |
+
+英文 AI 知识库已完成 00-08 全量镜像，并已补充资深 Q&A、系统设计追问和生产级 AI 工程场景。
+
+---
+
 ## 🧮 算法与数据结构（3篇）
 
 面试核心算法知识的系统梳理，覆盖数据结构、经典算法、系统设计和刷题指南。
@@ -122,6 +207,22 @@ LLM时代的AI工程师必备知识，从原理到落地。
 - 12.6 字符串算法 KMP（含 Rabin-Karp、AC自动机扩展）
 - 12.7 并查集 Union-Find（路径压缩 + 按秩合并）
 - 12.8 字典树 Trie（含压缩Trie、双数组Trie扩展）
+
+---
+
+## 🌐 Algorithms and Data Structures（English Mirror）
+
+英文算法与数据结构知识库与中文 `算法与数据结构` 保持 01-03 编号一一对应，覆盖编码面试、系统设计面试和 LeetCode 分类刷题表达，算法代码示例已覆盖 Go + Python。
+
+入口：[README](./algorithms-and-data-structures/README.md)
+
+| # | File | Source | Status |
+|---|------|--------|--------|
+| 01 | [Algorithms and Data Structures](./algorithms-and-data-structures/01-Algorithms-and-Data-Structures.md) | [算法与数据结构](./算法与数据结构/01-算法与数据结构.md) | Done |
+| 02 | [System Design Interview](./algorithms-and-data-structures/02-System-Design-Interview.md) | [系统设计面试专题](./算法与数据结构/02-系统设计面试专题.md) | Done |
+| 03 | [LeetCode Pattern Guide](./algorithms-and-data-structures/03-LeetCode-Pattern-Guide.md) | [LeetCode分类刷题指南](./算法与数据结构/03-LeetCode分类刷题指南.md) | Done |
+
+英文算法知识库已完成 01-03 全量镜像，覆盖 coding interview、system design interview 和 Go/Python 代码表达。
 
 ---
 
@@ -157,6 +258,23 @@ LLM时代的AI工程师必备知识，从原理到落地。
 
 ---
 
+## 🌐 Specialized Knowledge Base（English Mirror）
+
+英文专项知识库覆盖中文 `专项知识库` 中 03-06 四个基础设施与工程实践专项，面向 Linux/SRE/Testing/IaaS 相关英文面试与生产排障表达。
+
+入口：[README](./specialized-knowledge-base/README.md)
+
+| # | File | Source | Status |
+|---|------|--------|--------|
+| 03 | [Linux Operations and Troubleshooting](./specialized-knowledge-base/03-Linux-Operations-and-Troubleshooting.md) | [Linux运维与排障](./专项知识库/03-Linux运维与排障.md) | Done |
+| 04 | [Advanced SRE Practices](./specialized-knowledge-base/04-Advanced-SRE-Practices.md) | [SRE高级实践](./专项知识库/04-SRE高级实践.md) | Done |
+| 05 | [Comprehensive Software Testing](./specialized-knowledge-base/05-Comprehensive-Software-Testing.md) | [软件测试综合](./专项知识库/05-软件测试综合.md) | Done |
+| 06 | [IaaS Infrastructure Technologies](./specialized-knowledge-base/06-IaaS-Infrastructure-Technologies.md) | [IaaS基础设施技术](./专项知识库/06-IaaS基础设施技术.md) | Done |
+
+英文专项知识库已完成 README + 03-06 四篇镜像，聚焦 Linux 排障、SRE 实践、测试体系和 IaaS 基础设施。
+
+---
+
 ## 🔗 Web3知识库（7篇 + 导航）
 
 建议先看 [README](./Web3知识库/README.md)。这里补了新手入口、基础概念地图、推荐阅读顺序和避坑提醒，适合作为 Web3 学习主导航。
@@ -184,6 +302,26 @@ Web3/区块链全栈知识体系，从底层原理到工程实践。
 - **密码学基础**：`01-区块链核心原理` 的哈希/签名原理 ← 与 `后端知识库/06-网络基础与协议` 中 HTTPS/TLS 互补
 - **Rust语言**：`03-Rust系统编程` 的所有权与并发模型 ← 与 `后端知识库/05-并发编程模型` 的多语言对比互补
 - **系统架构**：`04-DeFi与应用协议` 的AMM/借贷架构 ← 与 `后端知识库/09-系统设计与架构` 的高可用设计互补
+
+---
+
+## 🌐 Web3 Knowledge Base（English Mirror）
+
+英文 Web3 知识库与中文 `Web3知识库` 保持 00-06 编号一一对应，面向智能合约、协议研究、交易所基础设施和 Web3 后端/平台方向的英文技术面试。
+
+入口：[README](./web3-knowledge-base/README.md)
+
+| # | File | Source | Status |
+|---|------|--------|--------|
+| 00 | [Web3 Overview and Mental Model](./web3-knowledge-base/00-Web3-Overview-and-Mental-Model.md) | [Web3入门与全景认知](./Web3知识库/00-Web3入门与全景认知.md) | Done |
+| 01 | [Blockchain Core Principles](./web3-knowledge-base/01-Blockchain-Core-Principles.md) | [区块链核心原理](./Web3知识库/01-区块链核心原理.md) | Done |
+| 02 | [Ethereum and Smart Contracts](./web3-knowledge-base/02-Ethereum-and-Smart-Contracts.md) | [以太坊与智能合约](./Web3知识库/02-以太坊与智能合约.md) | Done |
+| 03 | [Rust Systems Programming](./web3-knowledge-base/03-Rust-Systems-Programming.md) | [Rust系统编程](./Web3知识库/03-Rust系统编程.md) | Done |
+| 04 | [DeFi and Application Protocols](./web3-knowledge-base/04-DeFi-and-Application-Protocols.md) | [DeFi与应用协议](./Web3知识库/04-DeFi与应用协议.md) | Done |
+| 05 | [Layer2 and Cross-Chain Technology](./web3-knowledge-base/05-Layer2-and-Cross-Chain-Technology.md) | [Layer2与跨链技术](./Web3知识库/05-Layer2与跨链技术.md) | Done |
+| 06 | [Web3 Engineering Practices](./web3-knowledge-base/06-Web3-Engineering-Practices.md) | [Web3工程实践](./Web3知识库/06-Web3工程实践.md) | Done |
+
+英文 Web3 知识库已完成 00-06 全量镜像，覆盖区块链原理、EVM、DeFi、Layer2、Rust 和工程实践英文表达。
 
 ---
 
@@ -222,6 +360,7 @@ Web3/区块链全栈知识体系，从底层原理到工程实践。
 中间件：消息队列(08) → 并发编程(05)
 架构：系统设计(09) → 微服务(12) → 云原生(11)
 进阶：大数据(14) → Linux运维(专03) → SRE实践(专04)
+英文面试：Backend Knowledge Base 对应章节
 ```
 
 ### 🔵 前端开发工程师
@@ -231,6 +370,7 @@ Web3/区块链全栈知识体系，从底层原理到工程实践。
 框架：React深入(前02) → 前端框架综合(前06)
 工程化：Node.js(前03) → Nginx(前04)
 进阶：网络协议(后06) → 系统设计(后09)
+英文面试：Frontend Knowledge Base 对应章节
 ```
 
 ### 🟡 AI工程师
@@ -241,6 +381,7 @@ AI核心：AI知识库导航(AI-README) → AI入门(AI00) → LLM与Agent(AI01)
 工程化：AI工程化实践(AI03) → MCP与工具集成(AI02)
 训练进阶：模型训练与优化(AI04)
 后端补充：系统设计(后09) → Redis(后07) → 消息队列(后08)
+英文面试：AI Knowledge Base 对应章节
 ```
 
 ### 🔴 推荐系统工程师
@@ -271,6 +412,7 @@ AI补充：模型训练与优化(AI04) → LLM与Agent(AI01)
 语言：Rust系统编程(W3-03) → Go语言(后01)
 进阶：Layer2与跨链(W3-05)
 密码学补充：区块链原理(W3-01) Section 5-6 零知识证明
+英文面试：Web3 Knowledge Base 对应章节
 ```
 
 ### ⚫ 体系结构/硬件方向

@@ -1,6 +1,6 @@
 # LeetCode 分类刷题指南
 
-> 📅 最后更新：2026-04-27
+> 📅 最后更新：2026-05-26
 >
 > 🎯 定位：面试算法准备核心手册，覆盖高频题型 + 解题模板 + 代码实现
 >
@@ -1383,7 +1383,66 @@ def largestRectangleArea(heights: list[int]) -> int:
 
 > **核心心法**：是否能通过遍历一遍得到答案？还是需要通过子问题（子树）的答案推导出原问题的答案？
 
-### 5.2 遍历模板
+> **前/中/后序怎么区分？** 见 [§5.2 前/中/后序如何区分与选型](#52-前中后序如何区分与选型)；理论详见 [01-算法与数据结构 §4.0](./01-算法与数据结构.md#40-二叉树-dfs前中后序如何区分)。
+
+### 5.2 前/中/后序：如何区分与选型 ⭐⭐⭐
+
+#### 定义：「处理 root」写在哪
+
+| 遍历 | 顺序 | 识别方法 |
+|------|------|----------|
+| **前序** | 根 → 左 → 右 | **主要逻辑**在 `dfs(left/right)` **之前** |
+| **中序** | 左 → 根 → 右 | **主要逻辑**在 `dfs(left)` **之后**、`dfs(right)` **之前** |
+| **后序** | 左 → 右 → 根 | **主要逻辑**在 `dfs(left)` 和 `dfs(right)` **都返回之后** |
+
+**「主要逻辑」** = 用当前节点做本题核心计算（返回值、更新答案、收集结果），**不包括** `if root == nil { return }`。
+
+#### 别被 base case 误导
+
+```go
+func maxDepth(root *TreeNode) int {
+    if root == nil { return 0 }     // 终止条件，不是前序
+    left := maxDepth(root.Left)
+    right := maxDepth(root.Right)
+    return max(left, right) + 1     // 依赖子树 → 后序
+}
+```
+
+```go
+func lowestCommonAncestor(root, p, q *TreeNode) *TreeNode {
+    if root == nil || p == root || q == root { return root } // 边界/信号
+    left := lca(root.Left, p, q)
+    right := lca(root.Right, p, q)
+    if left != nil && right != nil { return root }            // 后序：左右之后
+    ...
+}
+```
+
+#### 刷题选型速查
+
+| 你要干什么 | 用什么序 | 代表题 |
+|------------|----------|--------|
+| 答案依赖左右子树返回值 | **后序** | 104 深度、236 LCA、124 路径和、543 直径 |
+| 自顶向下传状态/路径 | **前序** | 297 序列化、257 路径、114 展平 |
+| 需要左子树有序后再看根 | **中序** | 94 遍历、98 验证 BST、230 第 K 小 |
+| 按层处理 | **BFS** | 102 层序、429 N 叉树层序 |
+
+#### 后序 ≠ 一定要 void
+
+分解思维的后序 **必须有返回值**，用子树结果推导父节点：
+
+```
+后序 DFS + 返回值  →  104、236、124（分解思维）
+前序 DFS + 外部变量  →  遍历整棵树收集（遍历思维）
+```
+
+#### 自检三问
+
+1. 当前节点的答案，要不要等左右子树算完？→ 要 = **后序**
+2. 是不是先处理 root 再把信息往下传？→ 是 = **前序**
+3. 是不是左子树处理完才能处理 root（BST 有序）？→ 是 = **中序**
+
+### 5.3 遍历模板
 
 #### 递归遍历（Go）
 
@@ -1497,13 +1556,13 @@ func levelOrder(root *TreeNode) [][]int {
 }
 ```
 
-### 5.3 高频题详解
+### 5.4 高频题详解
 
 #### 题目1：LC104 二叉树的最大深度 (Maximum Depth of Binary Tree)
 
 **难度**：Easy | **频率**：🔥🔥🔥🔥🔥
 
-**思路**：分解子问题 —— 树的最大深度 = max(左子树深度, 右子树深度) + 1
+**思路**：分解子问题 —— 树的最大深度 = max(左子树深度, 右子树深度) + 1。**后序 DFS**（先递归左右，再 `+1` 处理 root）。见 [§5.2](./03-LeetCode分类刷题指南.md#52-前中后序如何区分与选型)。
 
 ```go
 func maxDepth(root *TreeNode) int {
@@ -1586,7 +1645,7 @@ func isValidBSTInorder(root *TreeNode) bool {
 
 **难度**：Medium | **频率**：🔥🔥🔥🔥🔥
 
-**思路**：后序遍历。如果当前节点是 p 或 q，返回当前节点。如果左右子树分别找到 p 和 q，当前节点就是 LCA。
+**思路**：**后序 DFS**——先拿左右子树结果，再判断当前节点是否为 LCA。`p==root||q==root` 是边界信号，不是前序。详见 [§5.2](./03-LeetCode分类刷题指南.md#52-前中后序如何区分与选型) 与 [算法文档 §4.0](./01-算法与数据结构.md#40-二叉树-dfs前中后序如何区分)。
 
 ```go
 func lowestCommonAncestor(root, p, q *TreeNode) *TreeNode {
@@ -1720,11 +1779,12 @@ def pathSum(root, targetSum: int) -> int:
 - 时间复杂度：O(n)
 - 空间复杂度：O(n)
 
-### 5.4 面试自查
+### 5.5 面试自查
 
 - [ ] 三种遍历的递归和迭代都能写吗？
 - [ ] 能用一句话区分"遍历思维"和"分解思维"吗？
-- [ ] LCA 的递归逻辑能画图讲清楚吗？
+- [ ] **能区分 base case 和「处理 root」吗？能判断一题是前/中/后序哪一种吗？** → [§5.2](./03-LeetCode分类刷题指南.md#52-前中后序如何区分与选型)
+- [ ] LCA 的递归逻辑能画图讲清楚吗？为什么是后序而不是前序？
 - [ ] 路径总和 III 的前缀和为什么需要回溯？
 
 ---
@@ -1747,7 +1807,28 @@ def pathSum(root, targetSum: int) -> int:
 | 重叠子问题 | 无（或不利用） | 有（且利用） |
 | 时间复杂度 | 指数级 | 多项式级 |
 
-### 6.2 解题模板
+**回溯 vs BFS**：回溯 `visited`/path **要撤销**；BFS 最短路 `visited` **不撤销**。见 [§9.2 visited 澄清](#bfs-的-visited为什么不需要回溯-) / [算法 §6.2.3](./01-算法与数据结构.md#623-bfs-的-visited为什么不需要回溯)。
+
+### 6.2 子集 / 组合 / 排列：统一框架 ⭐⭐⭐
+
+> 理论版见 [01-算法与数据结构 §9.2](./01-算法与数据结构.md#92-子集--组合--排列统一框架)
+
+| 题型 | 下一层选择 | 何时收集 | 代表题 |
+|------|-----------|---------|--------|
+| 子集 | `start`，只往后 | **每个节点** | LC78 |
+| 组合 | `start`，只往后 | `len(path)==k` | LC77 |
+| 全排列 | `0..n-1` + `used` | `len(path)==n` | LC46/47 |
+| 电话号 | 映射字母 | `idx==len` | LC17 |
+| N 皇后 | 每行试列 | 满 n 行 | LC51 |
+
+```
+78 → 77（加 k 条件）
+46 → 47（加排序去重 !used[i-1]）
+17（按 idx 分层，定长 path 用 idx 判结束）
+51（按 row 分层 + 对角线 bool）
+```
+
+### 6.3 解题模板
 
 ```go
 var result [][]int
@@ -1790,7 +1871,22 @@ def backtrack(path, choices):
         path.pop()  # 撤销
 ```
 
-### 6.3 高频题详解
+#### 收集答案：为什么要 copy
+
+```go
+// ✗ slice 共享底层数组，回溯后 result 里全乱
+result = append(result, path)
+
+// ✓ 快照
+tmp := make([]int, len(path)); copy(tmp, path); result = append(result, tmp)
+
+// ✓ LC17 定长 []byte：string(path) 即拷贝内容
+result = append(result, string(path))
+```
+
+**易错**：`path := make([]byte, n)` 时 `len(path)==n` 一开始就成立，结束条件必须用 **`idx == n`**，不能用 `len(path)==n`。
+
+### 6.4 高频题详解
 
 #### 题目1：LC46 全排列 (Permutations)
 
@@ -2057,7 +2153,7 @@ func exist(board [][]byte, word string) bool {
 - 时间复杂度：O(m × n × 3^L)，L 为单词长度（每步最多3个方向）
 - 空间复杂度：O(L)，递归深度
 
-### 6.4 回溯问题分类对比
+### 6.5 回溯问题分类对比
 
 | 题型 | 起始索引 | 可否重复选 | 关键去重 |
 |------|---------|----------|---------|
@@ -2066,12 +2162,16 @@ func exist(board [][]byte, word string) bool {
 | 组合总和(可重复) | i (当前) | 是 | 排序+剪枝 |
 | 组合总和II(有重复元素) | i+1 | 否 | `i>start && nums[i]==nums[i-1]` |
 | 全排列 | 0 | 否 | used 数组 |
-| 全排列II(有重复) | 0 | 否 | used + 排序去重 |
+| 全排列II(有重复) | 0 | 否 | used + 排序 + `!used[i-1]` |
+| 电话号 | idx | — | 结束条件用 idx；`string(path)` 快照 |
+| N皇后 | row | — | cols + 两对角线 bool |
 
-### 6.5 面试自查
+### 6.6 面试自查
 
 - [ ] 回溯模板能默写吗？
 - [ ] 子集、组合、排列的区别能一句话说清吗？
+- [ ] 收集答案为什么要 copy？LC17 为什么用 idx 不用 len(path)？
+- [ ] BFS visited 和回溯撤销有何区别？
 - [ ] N 皇后的对角线判断逻辑能讲清楚吗？
 - [ ] 什么时候从 i 开始，什么时候从 i+1 开始？
 
@@ -2656,6 +2756,8 @@ func canCompleteCircuit(gas []int, cost []int) int {
 | Dijkstra | 单源最短路径（非负权） | 优先队列 | O((V+E)logV) |
 | 并查集 | 连通分量、判环 | 数组 | O(α(n))≈O(1) |
 
+> **理论详解**：[01-算法与数据结构 §6.2.3 BFS visited 为什么不需要回溯](./01-算法与数据结构.md#623-bfs-的-visited为什么不需要回溯)
+
 ### 9.2 BFS/DFS 模板
 
 #### BFS 模板（Go）
@@ -2680,6 +2782,20 @@ func bfs(graph [][]int, start int) {
     }
 }
 ```
+
+#### BFS 的 visited：为什么不需要回溯 ⭐⭐⭐
+
+> 完整推导见 [算法文档 §6.2.3](./01-算法与数据结构.md#623-bfs-的-visited为什么不需要回溯)
+
+**一句话**：无权最短路里，节点**第一次**被 BFS 访问时的步数就是最短；`visited` 挡掉的是更长的重复路径，**不是**贪心式的「局部最优导致全局失败」。
+
+| | BFS + visited | 回溯 DFS |
+|--|---------------|----------|
+| 目标 | 最少步数 | 所有解 |
+| 标记后 | 不撤销 | 必须撤销 path/used |
+| 典型题 | LC433、LC127 | LC46、LC51 |
+
+**一次 visited 不够时**：边权不同 → Dijkstra；状态多维 → `visited[node][state]`；求所有路径 → 回溯。
 
 #### DFS 模板（Go）
 
@@ -2952,8 +3068,69 @@ func maxAreaOfIsland(grid [][]int) int {
 - 时间复杂度：O(m × n)
 - 空间复杂度：O(m × n)
 
+---
+
+#### 题目：LC433 最小基因变化 (Minimum Genetic Mutation)
+
+**难度**：Medium | **频率**：🔥🔥🔥
+
+**思路**：隐式图 BFS。节点 = 基因串；边 = 改 1 个碱基且在 `bank` 中。`end` 必须在 `bank` 里；`visited` 标记后不撤销。
+
+```go
+func minMutation(startGene, endGene string, bank []string) int {
+    set := make(map[string]struct{}, len(bank))
+    for _, g := range bank {
+        set[g] = struct{}{}
+    }
+    if _, ok := set[endGene]; !ok {
+        return -1
+    }
+    genes := []byte{'A', 'C', 'G', 'T'}
+    visited := map[string]bool{startGene: true}
+    queue := []string{startGene}
+    step := 0
+    for len(queue) > 0 {
+        size := len(queue)
+        for i := 0; i < size; i++ {
+            cur := queue[0]
+            queue = queue[1:]
+            if cur == endGene {
+                return step
+            }
+            b := []byte(cur)
+            for j := 0; j < 8; j++ {
+                orig := b[j]
+                for _, g := range genes {
+                    if g == orig {
+                        continue
+                    }
+                    b[j] = g
+                    next := string(b)
+                    if _, ok := set[next]; !ok || visited[next] {
+                        b[j] = orig
+                        continue
+                    }
+                    visited[next] = true
+                    queue = append(queue, next)
+                    b[j] = orig
+                }
+            }
+        }
+        step++
+    }
+    return -1
+}
+```
+
+**复杂度**：时间 O(bank × 32)，空间 O(bank)
+
+**同类题**：LC127 单词接龙（同一套 BFS 隐式图）
+
+---
+
 ### 9.4 面试自查
 
+- [ ] BFS 的 visited 为什么不需要回溯？和回溯的撤销有何区别？
 - [ ] BFS 和 DFS 分别用什么数据结构？
 - [ ] 拓扑排序 BFS(Kahn) 和 DFS 两种实现都会写吗？
 - [ ] Dijkstra 为什么不能处理负权边？
@@ -3267,7 +3444,8 @@ func findMin(nums []int) int {
 | 建堆 | O(n) |
 
 **典型场景**：
-- 求第 K 大/小 → 大小为 K 的堆
+- 堆基础（定义、性质、小/大根堆）→ [§5.1～5.3](./01-算法与数据结构.md#51-堆是什么)
+- 求第 K 大/小 → [§5.9 Top K 决策表](./01-算法与数据结构.md#应用1top-k-问题-)
 - 合并多个有序序列 → 最小堆
 - 动态维护中位数 → 一个大顶堆 + 一个小顶堆
 
@@ -3302,7 +3480,23 @@ func (h *IntHeap) Pop() interface{} {
 
 **难度**：Medium | **频率**：🔥🔥🔥🔥
 
-**思路**：统计频次 + 最小堆维护 K 个最高频元素。也可用桶排序 O(n)。
+**思路**：统计频次 + **size=k 小根堆**（按频次）维护 K 个最高频元素；也可用桶排序 O(n)。Top K 为何用小根堆见 [算法文档 §5.4](./01-算法与数据结构.md#应用1top-k-问题-)。
+
+**堆写法（Python）**：
+
+```python
+import heapq
+from collections import Counter
+
+def topKFrequent(nums, k):
+    count = Counter(nums)
+    heap = []
+    for num, cnt in count.items():
+        heapq.heappush(heap, (cnt, num))
+        if len(heap) > k:
+            heapq.heappop(heap)
+    return [num for _, num in heap]
+```
 
 ```go
 func topKFrequent(nums []int, k int) []int {
@@ -3496,7 +3690,7 @@ func (pq *PQMatrix) Pop() interface{} {
 
 - [ ] Go 的 container/heap 接口能快速实现吗？
 - [ ] 数据流中位数的双堆方案能讲清楚吗？
-- [ ] Top K 问题用最小堆还是最大堆？为什么？
+- [ ] Top K 问题用最小堆还是最大堆？为什么？→ [§5.4 Top K 决策表](./01-算法与数据结构.md#应用1top-k-问题-)
 
 ---
 
