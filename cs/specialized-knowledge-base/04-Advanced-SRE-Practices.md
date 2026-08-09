@@ -875,3 +875,33 @@ Reference answer:
 ## Summary
 
 Advanced SRE is the engineering discipline that connects user experience, system design, operational response, and governance. Strong SRE practice is visible in five behaviors: clear SLIs, actionable alerts, fast mitigation, disciplined postmortems, and reliability policies that actually influence engineering decisions.
+
+
+## 16. Production SRE Updates
+
+### Alert Governance
+
+A page-worthy alert must have user impact, require immediate action, and route to an owner who knows the next step. Use grouping, inhibition, silence windows, routing, alert effectiveness, MTTA, night pages, and recurring-alert reviews to fight alert fatigue. Symptom alerts should usually page; cause alerts should often become tickets or dashboards.
+
+### Disaster Recovery and Data Safety
+
+Do not treat cross-region active-active as automatically RPO=0. True cross-region synchronous writes are expensive and affect latency and availability. Backup is only valid when restore is tested: practice PITR, validate checksums, permissions, runbooks, and actual RTO/RPO. Dual-primary databases need explicit ownership, conflict resolution, reconciliation, and rollback design; auto-increment offsets only avoid key collision.
+
+### Incident, Release, and Resilience Practices
+
+Postmortems should be blameless, timeline-driven, and end with owned action items and acceptance criteria. Release strategies differ: rolling is cheap, blue-green has clean rollback, canary validates real traffic, and feature flags decouple deployment from exposure. Retry budgets, end-to-end deadlines, circuit breakers, bulkheads, and load shedding prevent cascading failures.
+
+### Prometheus, FinOps, and Security Operations
+
+Production Prometheus needs cardinality limits, recording rules, HA/remote storage, histogram bucket design aligned to SLOs, and trace/log correlation. Security operations should cover secret rotation, vulnerability response, SBOM/image signing, admission control, and staged rollback plans.
+
+### Additional Senior Questions
+
+### Q45: What makes an alert actionable?
+It must represent user or SLO impact, require immediate action, and include an owner and runbook.
+
+### Q46: Why can retry worsen an outage?
+Retries multiply load when downstream is already slow. Use retry budgets, deadlines, jitter, idempotency, and bulkheads.
+
+### Q47: Does having backups prove RPO/RTO?
+No. Only a successful restore drill can validate real RPO/RTO.

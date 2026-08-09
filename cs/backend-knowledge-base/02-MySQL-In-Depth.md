@@ -2,20 +2,24 @@
 
 Language: English | [中文](../后端知识库/02-MySQL深入.md)
 
+> **Baseline**: MySQL **8.0** unless noted. Call out 5.7 vs 8.0 differences (redo capacity, REPLICA/SOURCE terms, descending indexes, etc.).
+
 ---
 
 ## Table of Contents
 
 1. [Storage Engines](#1-storage-engines)
 2. [Logging Mechanism](#2-logging-mechanism)
-3. [Indexing Principles](#3-indexing-principles)
-4. [SQL Execution](#4-sql-execution)
-5. [Transactions and Locks](#5-transactions-and-locks)
-6. [Replication and Consistency](#6-replication-and-consistency)
-7. [Performance Optimization](#7-performance-optimization)
-8. [Data Modeling](#8-data-modeling)
-9. [Practical Cases](#9-practical-cases)
-10. [Interview Self-Check](#10-interview-self-check)
+3. [InnoDB Memory Subsystem](#3-innodb-memory-subsystem)
+4. [Indexing Principles](#4-indexing-principles)
+5. [SQL Execution](#5-sql-execution)
+6. [Transactions and Locks](#6-transactions-and-locks)
+7. [Replication and Consistency](#7-replication-and-consistency)
+8. [Online DDL, Backup, 8.0 Features](#8-online-ddl-backup-80-features)
+9. [Performance Optimization](#9-performance-optimization)
+10. [Data Modeling](#10-data-modeling)
+11. [Practical Cases](#11-practical-cases)
+12. [Interview Self-Check](#12-interview-self-check)
 
 ---
 
@@ -96,11 +100,33 @@ Benefits:
 - Crash recovery can replay redo logs.
 - Dirty pages can be flushed lazily.
 
+**Dual-1 durability**: production money-path often sets `innodb_flush_log_at_trx_commit=1` **and** `sync_binlog=1`. Changing only one still risks lost commits or primary/replica gaps. Relax both together only with an explicit RPO budget.
+
+Redo capacity: before 8.0.30, classic default was two `ib_logfile*` (often 48MB each); 8.0.30+ uses `innodb_redo_log_capacity` (default 100MB total). Server default `binlog_format` has been **ROW** since 5.7.7.
+
 ---
 
-## 3. Indexing Principles
+## 3. InnoDB Memory Subsystem
 
-### 3.1 B+Tree Structure
+### 3.1 Buffer Pool ⭐⭐⭐
+
+Hot pages live in the Buffer Pool. Reads hit memory when possible; writes modify in-memory pages (dirty) and write redo, then flush later.
+
+**Why not a plain LRU?** Full scans would push hot pages out. InnoDB uses **midpoint insertion**: new pages enter the *old* sublist; only pages accessed again after `innodb_old_blocks_time` promote to the *new* sublist. Scan-once pages die in the old zone without polluting hot data.
+
+Related lists: LRU (eviction order), Free (empty pages), Flush (dirty pages ordered by LSN for checkpointing).
+
+### 3.2 Change Buffer / Doublewrite / Purge
+
+- **Change Buffer**: defer changes to **non-unique secondary** index pages that are not in memory (unique indexes usually cannot, because uniqueness must be checked immediately).
+- **Doublewrite**: write a full page copy sequentially before the real page write to survive torn pages.
+- **Purge**: after commit, old undo versions stay until no Read View needs them. Long transactions block purge → undo bloat and slower version-chain walks.
+
+---
+
+## 4. Indexing Principles
+
+### 4.1 B+Tree Structure
 
 MySQL **InnoDB** indexes are usually B+Trees. Not every engine/index type is:
 
@@ -124,7 +150,7 @@ Root
  │    ├── Leaf page -> Leaf page -> Leaf page
 ```
 
-### 3.2 Clustered and Secondary Indexes
+### 4.2 Clustered and Secondary Indexes
 
 One InnoDB table is **multiple B+Trees**, not one:
 
@@ -159,7 +185,9 @@ A non-primary unique index is still a secondary index: the leaf stores `(unique_
 
 Difference vs normal secondary index: unique equality matches **at most one row** (at most one lookup); a non-unique key may match many rows and multiply lookups. Cost of one lookup is usually fine; thousands of random PK lookups are expensive. Prefer covering indexes and avoid `SELECT *` on large ranges.
 
-### 3.3 Composite Indexes
+### 4.3 Composite Indexes
+
+Order columns by **query shape**, not “highest cardinality first.” A low-cardinality equality column can still lead if every query filters it first.
 
 Leftmost prefix rule:
 
@@ -175,7 +203,7 @@ This index can support:
 
 It cannot efficiently support `WHERE status = ?` alone.
 
-### 3.4 Covering Index and Back-to-Table Lookup
+### 4.4 Covering Index and Back-to-Table Lookup
 
 Covering index means all required columns are in the index.
 
@@ -187,7 +215,7 @@ WHERE user_id = ?;
 
 If `(user_id, status)` covers the query, no row lookup is needed.
 
-### 3.5 Index Failure Cases
+### 4.5 Index Failure Cases
 
 Indexes may not be used effectively when:
 
@@ -198,15 +226,15 @@ Indexes may not be used effectively when:
 - Low selectivity makes full scan cheaper.
 - Composite index violates leftmost prefix.
 
-### 3.6 Index Condition Pushdown
+### 4.6 Index Condition Pushdown
 
 Index Condition Pushdown lets storage engine filter more conditions at index scan time, reducing row lookups.
 
 ---
 
-## 4. SQL Execution
+## 5. SQL Execution
 
-### 4.1 Lifecycle of a SQL Query
+### 5.1 Lifecycle of a SQL Query
 
 ```text
 Client
@@ -218,7 +246,7 @@ Client
 -> storage engine
 ```
 
-### 4.2 Optimizer
+### 5.2 Optimizer
 
 The optimizer chooses execution plans based on:
 
@@ -228,7 +256,7 @@ The optimizer chooses execution plans based on:
 - Join order.
 - Predicate selectivity.
 
-### 4.3 EXPLAIN
+### 5.3 EXPLAIN
 
 Important fields:
 
@@ -246,272 +274,200 @@ Red flags:
 - `Using temporary`.
 - very high `rows`.
 
-### 4.4 Prepared Statements
+### 5.4 Prepared Statements
 
 Prepared statements reduce parse overhead and avoid SQL injection when used correctly.
 
 ---
 
-## 5. Transactions and Locks
+## 6. Transactions and Locks
 
-### 5.1 Isolation Levels
+### 6.1 Isolation Levels
 
 | Isolation | Problems Prevented |
 |-----------|--------------------|
 | Read Uncommitted | almost none |
 | Read Committed | dirty reads |
-| Repeatable Read | dirty/non-repeatable reads |
-| Serializable | phantom reads by serialization |
+| Repeatable Read | dirty/non-repeatable reads (snapshot path) |
+| Serializable | strongest; more locking |
 
-InnoDB default isolation is Repeatable Read. It uses MVCC plus next-key locks to address many phantom scenarios.
+InnoDB default is Repeatable Read. **RR ≠ “always next-key on every SELECT”**: plain `SELECT` is a snapshot read (MVCC); `SELECT FOR UPDATE` / `UPDATE` / `DELETE` are current reads (locks).
 
-### 5.2 MVCC ⭐⭐⭐
+### 6.2 MVCC ⭐⭐⭐
 
-MVCC enables consistent reads without blocking writes.
+Key concepts: `DB_TRX_ID`, `DB_ROLL_PTR`, Read View, undo version chain.
 
-Key concepts:
+Walk from the **current** version until the first **visible** one. Inserts also have `trx_id` — MVCC can hide them on snapshot reads; it does **not** mean “MVCC cannot handle INSERT.”
 
-- Hidden transaction ID (`DB_TRX_ID`).
-- Roll pointer to undo log (`DB_ROLL_PTR`).
-- Read view + active transaction list.
-- Version chain walk until the first **visible** version.
+| Concern | Snapshot read |
+|---------|----------------|
+| Dirty read | Blocked in RC/RR |
+| Non-repeatable read | RR reuses one Read View; RC makes a new one per SELECT |
+| Phantom | Snapshot mostly filters; current reads need next-key |
 
-**Essence (common misconception)**
+Read View in RR is created on the **first consistent SELECT**, not at `BEGIN`. A late first SELECT can see commits that happened after `BEGIN`.
 
-1. Starts from the current row version.
-2. Applies Read View visibility rules.
-3. Walks the undo chain until it finds the first visible version.
+### 6.3 Lock Types and Rules (RR)
 
-| Concern | MVCC snapshot read |
-|---------|-------------------|
-| Dirty read | Prevented in RC/RR (other txs' uncommitted versions are invisible) |
-| Non-repeatable read | Prevented mainly in **RR** (reuse one Read View); **RC** creates a new Read View per SELECT and can still see others' commits |
-| Phantom read | Snapshot SELECT mostly filters invisible inserts; current reads (`SELECT FOR UPDATE` / `UPDATE`) need next-key locks |
+- Intention locks (IS/IX) on the table before row locks — IX is compatible with IX.
+- Insert intention lock: concurrent inserts into the same gap with different values do not block each other.
+- AUTO-INC modes: 8.0 default interleaved (best concurrency; values may have gaps).
+- `FOR SHARE` (8.0; formerly `LOCK IN SHARE MODE`), `FOR UPDATE NOWAIT` / `SKIP LOCKED`.
+- **MDL**: DML holds metadata read locks; a stuck query can block `ALTER` and then block the whole table.
 
-Also: a transaction always sees its **own** uncommitted changes. In InnoDB RR, the Read View is typically created on the **first consistent SELECT**, not strictly at `BEGIN`.
+| Scenario | Locks |
+|----------|-------|
+| Unique equality, **hit** | **Record lock only** (no gap) |
+| Unique equality, **miss** | Gap lock |
+| Non-unique equality | Next-key + following gap |
+| Range (`BETWEEN`, `>`) | Next-key over scanned range |
+| No usable index | Locks scanned rows/gaps (near table-wide) |
+| RC | No gap locks (record locks only) |
 
-At Repeatable Read, the same transaction usually reuses the same read view for consistent reads, so repeated reads see a stable snapshot.
+Common mistake: `WHERE id = 10 FOR UPDATE` on PK does **not** block inserting `id=7`.
 
-### 5.3 Lock Types
+Observe waits: `performance_schema.data_locks` / `data_lock_waits`.
 
-Common locks:
-
-- Shared lock and exclusive lock.
-- Record lock.
-- Gap lock.
-- Next-key lock.
-- Intention lock.
-- Insert intention lock.
-
-Next-key lock = record lock + gap lock. It protects index ranges and helps prevent phantom inserts.
-
-### 5.4 Deadlock Diagnosis
-
-Useful commands:
+### 6.4 Deadlock Diagnosis
 
 ```sql
-SHOW ENGINE INNODB STATUS;
+SHOW ENGINE INNODB STATUS\G  -- LATEST DETECTED DEADLOCK
 ```
 
-Practical prevention:
-
-- Access tables and rows in consistent order.
-- Keep transactions short.
-- Add proper indexes to avoid locking too many rows.
-- Avoid user interaction or remote calls inside transactions.
+Prevent: consistent lock order, short txs, indexes, optional RC to drop gap locks, optimistic versioning when conflicts are rare.
 
 ---
 
-## 6. Replication and Consistency
+## 7. Replication and Consistency
 
-### 6.1 Master-Replica Replication
-
-Classic replication flow:
+### 7.1 Primary–Replica
 
 ```text
-Primary writes binlog
--> replica IO thread pulls binlog
--> relay log
--> SQL thread applies changes
+Primary binlog → replica IO thread → relay log → SQL/applier threads
 ```
 
-**Async vs semi-sync — two commit-wait policies, not two stacked features**
+| Mode | COMMIT returns after | Notes |
+|------|----------------------|-------|
+| Async | Local durability only | May lose txs on primary crash |
+| Semi-sync | ≥1 replica has relay log ACK | Not “apply finished”; may fall back to async |
 
-| Mode | When primary returns COMMIT OK | Notes |
-|------|--------------------------------|-------|
-| **Async** (default) | After local binlog/engine commit; **does not wait** for replicas | Replica lag can mean committed txs never reached any replica if primary dies |
-| **Semi-sync** (plugin) | Waits for **≥1** replica ACK that binlog is in **relay log** | Guarantees log receipt, **not** that SQL apply finished; may fall back to async on ACK timeout |
+Prefer **ROW**. Terms: `SHOW REPLICA STATUS`, `SOURCE_*` (old `SLAVE`/`MASTER` names deprecated). Parallel apply: `replica_parallel_workers` (+ LOGICAL_CLOCK / writeset dependency).
 
-Same binlog → IO → relay → SQL pipeline; semi-sync only adds “wait for ACK before return OK.”
+**GTID**: `uuid:seq` global IDs; `MASTER_AUTO_POSITION=1` / auto-position; skip a bad event by injecting an empty transaction with that GTID — do not casually `sql_replica_skip_counter` under GTID. Watch `gtid_purged` when restoring backups.
 
-Replication formats:
+**MGR** (concept): group consensus, single-primary failover, write-set certification; needs PK, ROW, GTID. Prefer single-primary in production.
 
-- Statement-based (SQL text; risky with nondeterministic functions).
-- Row-based (row images; safest; common for DTS/CDC).
-- Mixed.
+### 7.2 Read-After-Write
 
-Row-based replication is more deterministic and common.
-
-**What may skip binlog or still diverge**
-
-| Case | Effect |
-|------|--------|
-| `log_bin` off / `SET sql_log_bin=0` | Change never reaches replicas |
-| `binlog_do_db` / `binlog_ignore_db` | Master may not log selected DBs |
-| Direct writes on replica / raw `.ibd` copy | Diverges outside replication |
-| STATEMENT + `NOW()`/`UUID()`/`RAND()` | Logged but results differ |
-| `replicate_*` filters / skip counter / skip GTID | Logged but not applied (or skipped) on replica |
-
-Prefer ROW, keep replicas read-only, avoid session `sql_log_bin=0` in app paths, checksum periodically.
-
-Replica lag causes: large transactions, slow apply (historically single SQL thread), weak replica hardware, long queries holding locks. Mitigations: `slave_parallel_workers`, smaller transactions.
-
-### 6.2 Read-After-Write Consistency
-
-Common strategies:
-
-- Read from primary after write.
-- Route users to same replica after checking delay.
-- Use GTID / log position wait.
-- Cache recently written keys and force primary reads.
+- Force primary for a short window after write.
+- `WAIT_FOR_EXECUTED_GTID_SET` (prefer over position wait).
+- Session sticky to primary.
+- Cache-aside for recently written keys.
 
 ---
 
-## 7. Performance Optimization
+## 8. Online DDL, Backup, 8.0 Features
 
-### 7.1 Slow Query Optimization
+### 8.1 Online DDL
 
-Workflow:
+Prefer **INSTANT** → **INPLACE** → **COPY**. Large tables: **gh-ost** or **pt-osc**; watch MDL waits and replica lag.
+
+### 8.2 Backup and PITR
+
+Logical (`mysqldump`) for small DBs; physical hot backup (XtraBackup) for large. PITR = full backup + binlog/GTID replay. Rehearse restores; set `gtid_purged` correctly.
+
+### 8.3 MySQL 8.0 Highlights
+
+Atomic DDL, true descending indexes, histograms, `EXPLAIN ANALYZE`, window functions/CTE, invisible indexes, REPLICA/SOURCE naming.
+
+---
+
+## 9. Performance Optimization
+
+### 9.1 Slow-Query Loop
 
 ```text
-find slow SQL -> EXPLAIN -> check indexes -> check rows scanned -> rewrite query -> verify
+slow log / performance_schema digest
+  → pt-query-digest / mysqldumpslow
+  → EXPLAIN / EXPLAIN ANALYZE
+  → fix SQL/index/schema → regress
 ```
 
-Checklist:
+### 9.2 Batch Operations
 
-- Avoid `SELECT *`.
-- Add indexes for high-selectivity predicates and join keys.
-- Avoid deep offset pagination.
-- Avoid large transactions.
-- Watch temporary tables and filesort.
+Bound batch size to avoid long locks and huge transactions.
 
-### 7.2 Batch Operations
+### 9.3 Deep Pagination
 
-Batch writes reduce round trips but should be bounded to avoid long locks and huge transactions.
-
-```sql
-INSERT INTO orders(id, user_id, amount)
-VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?);
-```
-
-### 7.3 Deep Pagination
-
-Avoid:
-
-```sql
-SELECT * FROM orders ORDER BY id LIMIT 1000000, 20;
-```
-
-Prefer keyset pagination:
-
-```sql
-SELECT * FROM orders
-WHERE id > ?
-ORDER BY id
-LIMIT 20;
-```
+Avoid large `OFFSET`. Prefer keyset (`WHERE id > ? ORDER BY id LIMIT n`) or deferred join (cover ids first, then join back).
 
 ---
 
-## 8. Data Modeling
+## 10. Data Modeling
 
-### 8.1 Normalization and Denormalization
+### 10.1 Normalization and Denormalization
 
-Normalization reduces redundancy and update anomalies. Denormalization improves read performance by duplicating data intentionally.
+Normalize for write correctness; denormalize when read fan-out dominates and ownership/repair is clear.
 
-Use denormalization when:
+### 10.2 Sharding
 
-- Read traffic is much heavier than writes.
-- Join cost is high.
-- Data consistency can be maintained by async repair or clear ownership.
-
-### 8.2 Sharding
-
-Sharding is used when a single database cannot handle data volume or write throughput.
-
-Challenges:
-
-- Distributed transactions.
-- Cross-shard queries.
-- Rebalancing.
-- Global unique IDs.
-- Hot shards.
-
-Shard key selection matters more than the sharding middleware.
+Last resort after indexes, caching, and vertical scale. Hard parts: cross-shard queries, resharding, global IDs, hot shards. Shard key beats middleware brand.
 
 ---
 
-## 9. Practical Cases
+## 11. Practical Cases
 
-### 9.1 Financial Transaction Table
+### 11.1 Financial Ledger
 
-Design principles:
+Immutable entries, unique request ID, state machine, audit columns, DB constraints as safety net; `FOR UPDATE` or version checks for balance updates.
 
-- Use immutable ledger entries.
-- Use unique request ID for idempotency.
-- Use transaction status state machine.
-- Keep audit fields.
-- Use database constraints as correctness boundary.
+### 11.2 Game Leaderboard
 
-### 9.2 Game Leaderboard
-
-Possible design:
-
-- MySQL stores durable ranking records.
-- Redis ZSet serves hot leaderboard reads.
-- Async jobs reconcile Redis and MySQL.
-- Use partitioning by season or region.
+MySQL durable store + Redis ZSet hot path + async reconcile; partition by season/region.
 
 ---
 
-## 10. Interview Self-Check
+## 12. Interview Self-Check
 
-### Q1: Why does InnoDB use B+Tree instead of hash index?
+### Q1: Why B+Tree over hash?
 
-**Answer:** B+Tree supports range scans, ordering, and stable disk/page access with high fan-out. Hash indexes are good for equality lookup but poor for range queries and ordering.
+**Answer:** Range, order, high fan-out on disk pages. Hash is equality-only.
+**Follow-up:** Rough rows in a 3-level tree with 16KB pages?
 
-### Q2: What is MVCC?
+### Q2: MVCC and Read View — RC vs RR?
 
-**Answer:** MVCC provides snapshot reads through transaction versions, undo logs, and read views. It allows readers and writers to avoid blocking each other in many cases.
+**Answer:** Version chain + Read View. RR creates view on **first consistent read** and reuses it; RC creates per SELECT.
+**Follow-up:** Can a late first SELECT after BEGIN see commits that happened after BEGIN? Yes.
 
-### Q3: What is the difference between redo log and binlog?
+### Q3: Redo vs binlog? Dual-1?
 
-**Answer:** Redo log is InnoDB's physical crash recovery log. Binlog is the MySQL server-level logical replication and PITR log.
+**Answer:** Redo = InnoDB crash recovery; binlog = replication/PITR. Dual-1 = flush redo + sync binlog on every commit.
 
-### Q4: What is a covering index?
+### Q4: Buffer Pool midpoint / doublewrite / change buffer?
 
-**Answer:** A covering index contains all columns needed by the query, so MySQL can answer from the index without fetching full rows.
+**Answer:** Midpoint protects hot pages from scans; doublewrite prevents torn pages; change buffer defers non-unique secondary index page reads.
 
-### Q5: How do you optimize a slow SQL query?
+### Q5: Next-key lock range for `id=10 FOR UPDATE` on PK?
 
-**Answer:** Capture the SQL, run `EXPLAIN`, inspect access type/index/rows/Extra, add or adjust indexes, rewrite predicates, reduce returned columns, avoid deep pagination, and verify with real data.
+**Answer:** **Record lock only** on hit; inserting nearby ids is not blocked. Ranges/non-unique get next-key/gap.
+**Follow-up:** Why can unique equality drop the gap? Uniqueness already forbids a duplicate in the gap.
 
-### Q6: What causes deadlocks?
+### Q6: How does RR fight phantoms? Can MVCC alone?
 
-**Answer:** Different transactions acquire locks in conflicting order. Missing indexes can enlarge lock ranges and increase deadlock probability.
+**Answer:** Snapshot path: MVCC hides inserts. Current-read path: next-key. Snapshot then UPDATE can still see phantoms.
 
-### Q7: How do you handle read-after-write consistency in primary-replica architecture?
+### Q7: GTID vs file/pos? Skip a bad event?
 
-**Answer:** Route recent reads to primary, wait for replica to catch up by GTID/binlog position, or design session-level consistency policies.
+**Answer:** Auto-position and topology flexibility. Under GTID, inject empty tx with that GTID; do not blindly skip counters.
 
-### Q8: What is next-key lock?
+### Q8: Online DDL choice? PITR?
 
-**Answer:** A next-key lock locks an index record and the gap before it. It helps prevent phantom inserts under Repeatable Read.
+**Answer:** INSTANT → INPLACE → tools (gh-ost/pt-osc). PITR = physical/logical full + binlog to a point; rehearse restores.
 
-### Q9: How do you design idempotent order creation?
+### Q9: Deadlocks / deep pagination / covering index?
 
-**Answer:** Require idempotency key, store it with a unique constraint, wrap creation in a transaction, and return the existing result for duplicate requests.
+**Answer:** Conflicting lock order + wide locks from missing indexes. Prefer keyset over huge OFFSET. Covering avoids PK lookups.
 
-### Q10: When should you shard MySQL?
+### Q10: When to shard?
 
-**Answer:** Only after schema, indexes, queries, caching, and vertical scaling are insufficient. Sharding adds operational and consistency complexity.
+**Answer:** After schema, indexes, cache, and vertical scale fail. Complexity is the real cost.

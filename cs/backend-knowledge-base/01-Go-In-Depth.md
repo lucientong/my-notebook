@@ -1820,7 +1820,32 @@ Interview point: Redis lock is an optimization. The database transaction and ide
 
 ---
 
-## 14. Interview Self-Check
+## 14. Advanced Runtime, Correctness, and Engineering Updates
+
+### Method Sets and Generics
+
+`T` and `*T` do not have the same method set. A value of type `T` only has methods with value receivers, while `*T` has both value-receiver and pointer-receiver methods. If an interface requires a pointer-receiver method, only `*T` implements it. Generics are best used for containers, algorithms, and type-safe helpers; interfaces describe behavior, while type parameters describe a family of concrete types.
+
+### Concurrent Correctness: Memory Model, atomic, and race
+
+A write in one goroutine is only guaranteed to be visible to another goroutine through a synchronization edge: `Mutex.Unlock -> Lock`, channel send -> receive, `close(ch)` -> observing close, `sync.Once`, or atomic operations. Use `go test -race ./...`, `go run -race`, or `go build -race`; there is no `go vet -race`. Atomic operations are useful for single-variable state, counters, and configuration pointers, but multi-field invariants are usually clearer with a mutex.
+
+### Allocator and GC
+
+Go allocation flows through P-local `mcache`, shared `mcentral`, and global `mheap`. Small objects use size classes and spans; tiny no-pointer objects may use the tiny allocator. Modern GC is concurrent mark-sweep with short STW phases, hybrid write barriers, pacer control, `GOGC`, and `GOMEMLIMIT`. `GOGC` controls heap growth ratio; `GOMEMLIMIT` gives the runtime a soft memory target, especially useful in containers.
+
+### Important Correctness Fixes
+
+- `delete` does not shrink a Go map automatically. After deleting many keys, rebuild the map if memory compaction matters.
+- `sync.Map.Store` has synchronization semantics; new keys may force a locked slow path before promotion, but they are not “invisible until promote.”
+- Do not call `gin.Context.Next()` from a new goroutine in a timeout middleware. Propagate `Request.Context()` and let downstream calls honor cancellation.
+
+### Engineering Practice
+
+A reliable Go engineering answer should include table-driven tests, benchmarks with `b.ResetTimer()` and `b.ReportAllocs()`, fuzzing, module hygiene, build tags, private module settings, and version-aware answers such as Go 1.14 async preemption, Go 1.18 generics, Go 1.19 `GOMEMLIMIT`, and Go 1.22 range-variable changes.
+
+
+## 15. Interview Self-Check
 
 ### Quick Questions
 
@@ -1937,3 +1962,14 @@ Interview point: Redis lock is an optimization. The database transaction and ide
 - Use transaction and state machine: created -> paying -> paid.
 - Redis lock can reduce duplicate concurrent work, but cannot be the correctness boundary.
 - Use context deadlines and retry-safe error classification.
+
+### Additional Senior Questions
+
+### Q25: Why can `T` fail to implement an interface that `*T` implements?
+Because pointer-receiver methods are only in the method set of `*T`. This matters for interfaces, large structs, mutable receivers, and structs containing locks.
+
+### Q26: When should you use atomic instead of a mutex?
+Use atomic for a single independent state variable. Use a mutex when multiple fields must change together or when the invariant is more important than avoiding lock overhead.
+
+### Q27: How do `GOGC` and `GOMEMLIMIT` differ?
+`GOGC` is a heap-growth ratio knob. `GOMEMLIMIT` is a soft memory target that makes the pacer more aggressive as the process approaches the limit.

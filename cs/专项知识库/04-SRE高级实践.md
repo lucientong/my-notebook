@@ -15,12 +15,13 @@
 ### 第二部分：SRE高级实践
 7. [容灾架构设计](#7-容灾架构设计)
 8. [故障管理与自愈](#8-故障管理与自愈)
+   - 建议先阅读第12章 SLO/Error Budget/变更管理，再回看容灾和自愈方案
 9. [监控体系建设](#9-监控体系建设)
 10. [性能优化实战](#10-性能优化实战)
 11. [成本优化](#11-成本优化)
 12. [稳定性治理](#12-稳定性治理)
 13. [Chaos Engineering](#13-混沌工程)
-14. [容量规划与成本优化](#14-容量规划与成本优化)
+14. [容量规划、弹性与FinOps](#14-容量规划与成本优化)
 15. [面试题自查](#15-面试题自查)
 
 ---
@@ -362,6 +363,36 @@ route:
 
 ---
 
+### 5.3 告警设计与治理⭐⭐⭐
+
+告警不是“指标超过阈值就发消息”，而是一个值班系统。好的告警必须满足三点：**用户影响明确、需要人或自动化立即行动、负责人知道下一步怎么做**。
+
+| 类型 | 示例 | 是否适合叫醒人 |
+|------|------|----------------|
+| 症状告警 | 支付成功率下降、P99 超 SLO、错误预算快速燃烧 | 适合 |
+| 原因告警 | 某台机器 CPU 90%、某实例重启 | 多数只适合工单/低优先级 |
+| 信息告警 | 发布完成、扩容完成 | 不应叫醒人 |
+
+Alertmanager 治理能力：
+
+- **grouping**：同一故障面下的告警聚合，避免一台机器引发几百条消息。
+- **inhibition**：上游根因告警触发时抑制下游噪声，例如机房网络故障时抑制单实例 HTTP 失败。
+- **silence**：维护窗口内静默预期告警，但必须有过期时间和审批记录。
+- **routing**：按服务、严重级别、团队、值班表路由到正确接收人。
+
+告警治理指标：
+
+| 指标 | 含义 | 目标 |
+|------|------|------|
+| MTTA | 从告警触发到有人确认 | P0/P1 应分钟级 |
+| 告警有效率 | 触发后确实需要动作的比例 | 越高越好 |
+| 夜间唤醒次数 | 值班负担 | 长期下降 |
+| 重复告警 Top N | 噪声来源 | 每周清理 |
+
+成熟团队会定期做 alert review：删除无行动告警、合并重复规则、把低价值原因告警降级为 dashboard 或工单，把真正影响用户的症状告警接入升级策略。
+
+---
+
 ## 6. 故障排查SOP
 
 ### 6.1 接口慢排查流程
@@ -392,7 +423,7 @@ route:
 |----------|----------------|----------------|------|----------|
 | **备份容灾** | 24小时 | 数小时-数天 | 💰 低 | 非核心业务 |
 | **双活容灾** | 秒级 | 分钟级 | 💰💰💰 中 | 一般业务 |
-| **异地多活** | 0（实时同步） | 秒级 | 💰💰💰💰 高 | 核心业务（金融、支付） |
+| **异地多活** | 接近 0 或按业务分片控制 | 秒级-分钟级 | 💰💰💰💰 高 | 核心业务（金融、支付） |
 
 **RTO vs RPO**：
 - **RTO（Recovery Time Objective）**：故障后多久恢复服务
@@ -419,7 +450,19 @@ route:
 
 **核心技术点**：
 
-#### 7.2.1 数据库双主同步（MySQL）
+#### 7.2.1 数据库写入模式：不要把“双主”当默认答案
+
+同城“双活”不等于数据库一定双主写。真实生产里常见做法包括：
+
+| 模式 | 优点 | 风险/代价 |
+|------|------|-----------|
+| 单主多从 + 自动/半自动切换 | 一致性模型清晰，冲突少 | 切换窗口内写入受影响 |
+| 分片本地写 | 每个用户/租户只写一个主分片 | 路由和扩容复杂，需要对账 |
+| 组复制/共识协议 | 自动选主或多副本一致性更强 | 延迟、成本、故障模式复杂 |
+| 双主写 | 两边都可写，表面可用性高 | 冲突、回环、延迟、数据修复难 |
+
+下面的自增步长只是避免主键冲突的演示，**不能**代表双主已经解决业务冲突和一致性问题：
+
 ```sql
 -- 主库A配置（server-id=1）
 [mysqld]
@@ -436,9 +479,9 @@ auto_increment_increment=2
 auto_increment_offset=2     # 起始值=2 (2,4,6,8...)
 ```
 
-**优点**：避免主键冲突（A生成奇数ID，B生成偶数ID）
+**优点**：可以避免自增主键直接冲突（A 生成奇数 ID，B 生成偶数 ID）。
 
-**缺点**：数据一致性依赖binlog同步，网络延迟会导致延迟
+**缺点**：这只解决主键冲突，不解决同一业务对象双写、库存扣减、唯一约束、顺序一致性和回切对账问题。生产方案必须明确写入归属、冲突解决和补偿流程。
 
 #### 7.2.2 缓存跨机房同步（Redis）
 ```bash
@@ -581,6 +624,22 @@ iptables -D INPUT -s 10.0.1.0/24 -j DROP
 
 ---
 
+### 7.5 备份恢复与数据演练⭐⭐
+
+备份不是“有文件”就算完成，必须证明能恢复。
+
+| 环节 | 要求 |
+|------|------|
+| 备份 | 明确全量/增量/binlog 或 WAL 策略 |
+| 校验 | 校验备份完整性、加密状态、可读性 |
+| 恢复 | 定期在隔离环境恢复到指定时间点（PITR） |
+| 演练 | 记录实际 RTO/RPO，与目标对比 |
+| 污染防护 | 防止误删、勒索、逻辑错误同步污染所有副本 |
+
+真正的 RPO/RTO 要从演练结果来，而不是从架构图推断。很多事故不是没有备份，而是备份不可用、恢复脚本过期、权限缺失、回切时数据对不上。
+
+---
+
 ## 8. 故障管理与自愈
 
 ### 8.1 故障等级定义
@@ -620,6 +679,24 @@ func CreateIncidentRoom(incident *Incident) {
     startRecording(room.ID)
 }
 ```
+
+### 8.2.1 Postmortem 与应急预案⭐⭐⭐
+
+Postmortem 的目标不是找人背锅，而是把一次事故转化为系统改进。标准结构：
+
+```text
+1. 摘要：影响范围、持续时间、用户损失
+2. 时间线：发现、确认、升级、止血、恢复、回切
+3. 贡献因素：技术、流程、监控、沟通、变更
+4. 做得好的地方：哪些机制发挥作用
+5. 做得不好的地方：哪些机制缺失或失效
+6. Action Items：负责人、截止时间、验收标准
+```
+
+避免写“根因就是某人误操作”这种结论。更好的写法是：为什么误操作可以绕过门禁？为什么监控没有提前发现？为什么回滚需要 30 分钟？
+
+Playbook 是应急预案，应该覆盖高频高损场景：DB 主切换、缓存雪崩、消息堆积、单 AZ 故障、证书过期、发布回滚、限流开关。每个 Playbook 至少包含触发条件、决策人、止血步骤、回滚步骤、验证方式和升级路径。
+
 
 ### 8.3 自动止血策略
 
@@ -760,6 +837,21 @@ spec:
           periodSeconds: 60
 ```
 
+### 8.3.4 过载保护：超时、重试预算、舱壁与 Load Shedding⭐⭐⭐
+
+级联故障常见路径是：下游变慢 → 上游线程/连接池堆满 → 调用方重试放大流量 → 更多服务被拖垮。止血不只靠扩容，还要有过载保护。
+
+| 机制 | 解决的问题 | 常见坑 |
+|------|------------|--------|
+| 超时 | 防止请求无限等待 | 超时时间比上游还长，等于没设 |
+| 重试预算 | 限制重试放大 | 所有层都重试导致流量倍增 |
+| 熔断 | 下游明显不可用时快速失败 | 阈值太敏感导致频繁开关 |
+| 舱壁隔离 | 防止一个依赖耗尽全部资源 | 线程池/连接池没分依赖隔离 |
+| Load Shedding | 过载时主动丢低优先级请求 | 没有业务优先级，误伤核心链路 |
+
+实践顺序：先定义端到端 deadline，再拆到每一跳 timeout；每层只允许有限重试，并把重试次数纳入容量评估；对核心和非核心链路隔离连接池；队列堆积时优先保护已经开始处理的请求和核心用户路径。
+
+
 ### 8.4 故障自愈实战
 
 **场景**：数据库主从延迟过大
@@ -768,7 +860,7 @@ spec:
 ```promql
 # Prometheus规则
 - alert: MySQLReplicationLag
-  expr: mysql_slave_lag_seconds > 60
+  expr: mysql_replica_lag_seconds > 60
   for: 5m
   annotations:
     summary: "MySQL主从延迟 {{ $value }}秒"
@@ -777,30 +869,30 @@ spec:
 **自动处理脚本**：
 ```bash
 #!/bin/bash
-# 自愈脚本：主从延迟时自动切换到主库
+# 示例脚本：副本延迟过高时临时切换读流量。生产必须加保护阈值、限流和人工确认，不能无脑自动切主库
 
-SLAVE_LAG=$(mysql -e "SHOW SLAVE STATUS\G" | grep Seconds_Behind_Master | awk '{print $2}')
+REPLICA_LAG=$(mysql -e "SHOW REPLICA STATUS\G" | grep Seconds_Behind_Source | awk '{print $2}')
 
-if [ "$SLAVE_LAG" -gt 60 ]; then
-    echo "主从延迟${SLAVE_LAG}秒，切换到主库"
+if [ "$REPLICA_LAG" -gt 60 ]; then
+    echo "主从延迟${REPLICA_LAG}秒，切换到主库"
     
     # 1. 修改应用配置，读请求切到主库
     kubectl set env deployment/myapp DB_READ_HOST=mysql-master
     
     # 2. 发送告警
-    curl -X POST http://alertmanager/api/v1/alerts -d '{
+    curl -X POST http://alertmanager/api/v2/alerts -d '{
         "labels": {"alertname": "MySQLReplicationLag", "severity": "warning"},
         "annotations": {"summary": "主从延迟，已切换到主库"}
     }'
     
     # 3. 等待从库追上
-    while [ "$SLAVE_LAG" -gt 10 ]; do
+    while [ "$REPLICA_LAG" -gt 10 ]; do
         sleep 10
-        SLAVE_LAG=$(mysql -e "SHOW SLAVE STATUS\G" | grep Seconds_Behind_Master | awk '{print $2}')
+        REPLICA_LAG=$(mysql -e "SHOW REPLICA STATUS\G" | grep Seconds_Behind_Source | awk '{print $2}')
     done
     
     # 4. 切回从库
-    kubectl set env deployment/myapp DB_READ_HOST=mysql-slave
+    kubectl set env deployment/myapp DB_READ_HOST=mysql-replica
     echo "从库已追上，切回从库"
 fi
 ```
@@ -880,26 +972,20 @@ scrape_configs:
 
 #### 9.2.2 真实用户监控（RUM）
 ```javascript
-// 前端埋点：上报页面加载时间
+// 前端埋点：Navigation Timing Level 2 + Web Vitals 思路
 window.addEventListener('load', function() {
-    const perfData = window.performance.timing;
-    const pageLoadTime = perfData.loadEventEnd - perfData.navigationStart;
-    const dnsTime = perfData.domainLookupEnd - perfData.domainLookupStart;
-    const tcpTime = perfData.connectEnd - perfData.connectStart;
-    const ttfb = perfData.responseStart - perfData.navigationStart;
-    
-    // 上报到监控系统
-    fetch('/api/metrics', {
-        method: 'POST',
-        body: JSON.stringify({
-            page_load_time: pageLoadTime,
-            dns_time: dnsTime,
-            tcp_time: tcpTime,
-            ttfb: ttfb,
-            url: window.location.href,
-            user_agent: navigator.userAgent
-        })
-    });
+    const nav = performance.getEntriesByType('navigation')[0];
+    if (!nav) return;
+
+    const metrics = {
+        page_load_time: nav.loadEventEnd - nav.startTime,
+        dns_time: nav.domainLookupEnd - nav.domainLookupStart,
+        tcp_time: nav.connectEnd - nav.connectStart,
+        ttfb: nav.responseStart - nav.requestStart,
+        url: location.pathname, // 避免完整 URL 带来高基数和隐私问题
+    };
+
+    navigator.sendBeacon('/api/rum', JSON.stringify(metrics));
 });
 ```
 
@@ -984,7 +1070,7 @@ rate(mysql_global_status_slow_queries[1m])
 mysql_global_status_threads_connected
 
 # 主从延迟
-mysql_slave_status_seconds_behind_master
+mysql_replica_status_seconds_behind_source
 ```
 
 #### 9.4.2 Redis监控
@@ -1069,6 +1155,24 @@ groups:
           /
           sum(rate(http_requests_total[1m])) by (service)
 ```
+
+---
+
+### 9.6 Prometheus 生产级设计⭐⭐⭐
+
+Prometheus 单机很容易上手，但生产瓶颈通常来自高基数、长期存储和 HA。
+
+| 问题 | 典型表现 | 处理方式 |
+|------|----------|----------|
+| 高基数 | TSDB 内存暴涨、查询慢 | 限制 label 取值，不把 user_id/order_id 放进 label |
+| 长期存储 | 本地盘保留周期有限 | remote_write 到 Thanos/Cortex/Mimir/VictoriaMetrics |
+| HA 去重 | 两个 Prometheus 抓同一目标 | 外部存储按 replica label 去重 |
+| 查询成本 | dashboard 慢、告警计算重 | recording rules 预聚合 |
+| Histogram 桶不合理 | P99 不准或成本过高 | 按 SLO 阈值设计 bucket，别盲目默认桶 |
+
+`histogram_quantile` 的准确性取决于 bucket 设计。若 SLO 是 P99 < 200ms，bucket 必须在 200ms 附近有足够分辨率；否则算出来的 P99 只是粗糙估计。
+
+Tracing 采样也要治理：普通请求可 head-based 低比例采样，错误请求和高延迟请求应 tail-based 或规则强制采样；trace_id 应能和日志、metrics exemplar 关联。
 
 ---
 
@@ -1403,7 +1507,7 @@ SRE 视角下，协议升级前至少要回答三件事：
 
 ---
 
-## 11. 成本优化
+## 11. 成本优化（概览，详见第14章 FinOps）
 
 ### 11.1 资源利用率优化
 
@@ -1667,9 +1771,9 @@ alerts:
 **Error Budget计算**：
 ```go
 func CalculateErrorBudget(slo float64, window time.Duration) time.Duration {
-    // SLO=99.95%，则允许0.05%的错误
-    allowedDowntime := window * time.Duration((1-slo)*100) / 100
-    return allowedDowntime
+    // slo 用 0.9995 表示 99.95%，允许错误比例为 1-slo
+    allowed := float64(window) * (1 - slo)
+    return time.Duration(allowed)
 }
 
 // 示例：
@@ -1856,6 +1960,18 @@ func (p *RollbackPolicy) ShouldRollback() bool {
 - SRE 指标告诉你用户到底有没有受损、可靠性目标是否被破坏
 - 真正成熟的团队会把 `Change Failure Rate`、`MTTR` 和 `Error Budget` 联动，而不是只追求发布更快
 
+### 12.2.5 发布策略矩阵：滚动、蓝绿、金丝雀与 Feature Flag⭐⭐⭐
+
+| 策略 | 优点 | 风险 | 适合场景 |
+|------|------|------|----------|
+| 滚动发布 | 成本低、流程简单 | 新旧版本混跑，回滚需要时间 | 普通无状态服务 |
+| 蓝绿发布 | 切换快，回滚清晰 | 需要双倍环境或容量 | 重大版本、入口服务 |
+| 金丝雀 | 小流量验证真实用户影响 | 观测和自动判定复杂 | 高风险变更 |
+| Feature Flag | 发布和功能开放解耦 | 配置治理复杂，遗留 flag 债务 | 产品实验、逐步放量 |
+
+发布门禁要和 SLO/Error Budget 联动：预算紧张时降低发布频率、扩大灰度观察窗口、禁止高风险变更；预算健康时允许更快迭代。
+
+
 ### 12.3 Toil 与 Runbook
 
 #### 12.3.1 什么是 Toil
@@ -1966,7 +2082,7 @@ spec:
 
 ---
 
-## 13. 混沌工程
+## 13. 混沌工程（原则与实验，需与12.4演练闭环）
 
 ### 13.1 混沌工程原则
 
@@ -2604,6 +2720,20 @@ FinOps月度Review Checklist：
 
 ---
 
+### 14.4 安全运维与供应链应急⭐⭐
+
+稳定性不只来自可用性，也来自安全事件可控。SRE 至少要参与三类安全运维：
+
+| 场景 | SRE 关注点 |
+|------|------------|
+| 密钥泄露 | 轮换范围、失效时间、依赖服务重启顺序 |
+| 漏洞应急 | 资产定位、镜像重建、灰度修复、回滚 |
+| 供应链风险 | 镜像签名、SBOM、准入控制、依赖锁定 |
+
+密钥轮换 Playbook 应包含：识别受影响凭据、创建新凭据、双写/双读兼容窗口、灰度替换、撤销旧凭据、验证无旧凭据访问。不要直接删除旧密钥，否则可能把恢复窗口变成新的故障。
+
+---
+
 ## 15. 面试题自查
 
 以下问题按“从基础到治理、从技术到协同”的顺序组织，适合作为 SRE 面试系统自查清单。
@@ -2765,13 +2895,13 @@ requestCounter.WithLabelValues(method, path, status).Inc()
 
 | 指标 | 含义 | 示例 |
 |------|------|------|
-| **RPO** | 最多丢失多长时间数据 | RPO=0表示不能丢数据 |
+| **RPO** | 最多可接受丢失多长时间数据 | RPO=0 表示理论上不能丢数据，但跨地域实现代价很高 |
 | **RTO** | 故障后多久恢复服务 | RTO=5min表示5分钟内恢复 |
 
 **容灾等级选择**：
 - **备份容灾**：RPO=24h，RTO=数小时，非核心业务
 - **同城双活**：RPO=秒级，RTO=分钟级，一般业务
-- **异地多活**：RPO=0，RTO=秒级，核心金融业务
+- **异地多活**：通常追求接近 0 的 RPO 或按业务分片把数据丢失控制在极小窗口；真正跨地域同步写入的 RPO=0 代价极高，需要权衡延迟、可用性和一致性
 
 ### Q12: 如何设计自动限流？有哪些限流算法？
 
@@ -3155,6 +3285,37 @@ PDB 只限制“自愿驱逐”数量，不保证业务一定可用。常见故�
 SRE 面试里，这题不是看你是否”没犯过错”，而是看你是否能把失败沉淀成可复用的验证方法和治理原则。
 
 ---
+
+### Q45: 什么是“可行动告警”？如何治理告警风暴和告警疲劳？
+
+**答案**：
+可行动告警必须满足三点：用户或 SLO 影响明确、需要人或自动化马上行动、接收人知道下一步怎么做。治理告警风暴要用分组、抑制、静默和依赖拓扑：机房网络故障触发后，应抑制大量下游实例告警；维护窗口必须用带过期时间的 silence；低价值原因告警降级为工单或 dashboard。衡量指标包括 MTTA、告警有效率、夜间唤醒次数、重复告警 Top N。
+
+### Q46: 蓝绿、金丝雀、滚动发布和 Feature Flag 怎么选？
+
+**答案**：
+滚动发布成本低，适合普通无状态服务；蓝绿发布切换和回滚清晰，但需要双倍环境或容量，适合重大版本和入口服务；金丝雀适合高风险变更，小流量验证真实用户影响；Feature Flag 把部署和功能开放解耦，适合产品实验和逐步放量，但需要治理遗留开关。资深回答要把发布策略和 Error Budget 联动：预算紧张时提高门禁、延长灰度、限制高风险变更。
+
+### Q47: 为什么重试会放大故障？什么是重试预算？
+
+**答案**：
+下游变慢时，上游重试会把一次失败变成多次请求；如果多层都重试，流量可能指数级放大，进一步拖垮下游。重试预算是对额外请求量设置上限，例如最多让重试流量不超过正常流量的某个比例。实践上要有端到端 deadline、每跳 timeout、幂等保证、指数退避和 jitter，并对核心/非核心链路做舱壁隔离。
+
+### Q48: 备份存在就等于满足 RPO/RTO 吗？如何验证？
+
+**答案**：
+不等于。RPO/RTO 必须通过恢复演练验证：从备份中恢复到指定时间点，校验数据完整性、一致性、权限、脚本和回切流程。很多事故不是没有备份，而是备份不可读、恢复耗时远超预期、binlog/WAL 缺失、恢复环境权限不全、或逻辑删除已经污染了所有副本。成熟团队会定期做隔离恢复演练，并记录实际 RPO/RTO。
+
+### Q49: Prometheus 高基数问题怎么发现和治理？Histogram 桶怎么设计？
+
+**答案**：
+高基数通常来自把 user_id、order_id、完整 URL、trace_id 放进 label，表现为内存飙升、查询慢、TSDB 压力大。治理方式是限制 label 值空间、对路径做模板化、用 recording rules 预聚合、为团队设置指标配额。Histogram 桶要围绕 SLO 阈值设计：如果 P99 目标是 200ms，200ms 附近必须有足够细的 bucket，否则 `histogram_quantile` 的结果只是粗略估计。
+
+### Q50: 密钥泄露或高危漏洞爆发时，SRE 应该怎么组织应急？
+
+**答案**：
+先定影响范围和资产清单，再执行分阶段止血：创建新密钥、灰度替换、验证业务读写、撤销旧密钥、监控异常访问。不要一上来直接删除旧密钥，否则可能造成二次故障。漏洞应急要定位受影响镜像/主机/依赖版本，重建镜像并走灰度发布，配合镜像签名、SBOM、准入控制和审计记录，最后补 Postmortem 与长期治理项。
+
 
 ### 开放式设计题
 

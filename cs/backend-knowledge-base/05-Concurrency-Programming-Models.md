@@ -309,7 +309,21 @@ Use proven implementations unless you have a strong reason to build one.
 
 ---
 
-## 10. Interview Self-Check
+## 10. Memory Model and IO Concurrency Updates
+
+### Memory Model, CAS, and Barriers
+
+happens-before is about visibility and ordering, not just wall-clock order. Mutex unlock/lock, channel send/receive, close observation, join, volatile, and atomics create synchronization edges. CAS is useful but can suffer from ABA; version tags, hazard pointers, epochs, or locks may be needed. Atomic operations suit single-variable state, while multi-field invariants usually need locks.
+
+### IO Multiplexing, Reactor, and Proactor
+
+select and poll linearly scan fd sets; epoll/kqueue keep interest sets in the kernel and return ready events. Reactor means readiness notification and application-managed read/write. Proactor means completion notification after the kernel completes IO. Edge-triggered mode requires draining until EAGAIN.
+
+### Go GMP, Worker Pools, and Distributed Locks
+
+Go netpoller parks goroutines waiting for network IO and wakes them when epoll/kqueue reports readiness, allowing goroutine-per-connection without one OS thread per connection. A production worker pool needs bounded queues, rejection/backpressure, timeouts, cancellation, and saturation metrics. Redis `SET NX PX` is only a lease; fencing tokens are needed to reject stale writers after pauses or network partitions.
+
+## 11. Interview Self-Check
 
 ### Q1: What is the difference between concurrency and parallelism?
 
@@ -364,3 +378,15 @@ Use proven implementations unless you have a strong reason to build one.
 ### Q13: What is a good failure mode for an overloaded worker pool?
 
 **Answer:** A senior design uses bounded queues, admission control, deadlines, rejection metrics, and caller-visible fallback. Unbounded queues hide overload until memory grows and latency explodes. A better pool rejects early, sheds low-priority work, protects downstream dependencies, and preserves enough observability to answer whether bottleneck is CPU, lock contention, queueing, or external IO.
+
+
+### Additional Senior Questions
+
+### Q21: select/poll/epoll and Reactor/Proactor?
+select/poll scan many fds; epoll/kqueue return ready events. Reactor handles readiness, Proactor handles completion.
+
+### Q22: Why is an unbounded worker queue dangerous?
+It hides overload as latency and memory growth until OOM. Use bounded queues and explicit backpressure or rejection.
+
+### Q23: Why is Redis SET NX PX not a complete distributed lock?
+The holder may pause past lease expiry and still write. Fencing tokens let downstream reject stale holders.

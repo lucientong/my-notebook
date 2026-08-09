@@ -11,14 +11,18 @@
 - [迭代器与生成器](#迭代器与生成器)
 - [GIL与并发模型](#gil与并发模型)
 - [装饰器与元编程](#装饰器与元编程)
+- [描述符、属性查找与类型系统](#描述符属性查找与类型系统)
 
 ### 异步与框架
 - [asyncio协程](#asyncio协程)
+- [asyncio进阶与混合并发](#asyncio进阶与混合并发)
 - [Django ORM优化](#django-orm优化)
 - [FastAPI实战](#fastapi实战)
+- [框架选型：Flask、Django、FastAPI](#框架选型flaskdjangofastapi)
 
 ### 工程实践与自查
 - [性能优化与调试](#性能优化与调试)
+- [测试、依赖与工程化](#测试依赖与工程化)
 - [实战案例](#实战案例)
 - [面试题自查](#面试题自查)
 
@@ -45,9 +49,9 @@ print(a)          # 42
 b = 42
 print(a is b)     # True（同一个对象）
 
-c = 1000
-d = 1000
-print(c is d)     # False（不同对象）
+c = int("1000")
+d = int("1000")
+print(c is d)     # 通常为 False，但这是实现细节，不应依赖
 ```
 
 ---
@@ -247,6 +251,43 @@ print(append_to(2))  # [2]（独立的列表）
 
 ---
 
+### `*args`、`**kwargs` 与方法类型
+
+`*args` 收集额外位置参数，`**kwargs` 收集额外关键字参数，常用于装饰器、框架回调和兼容性扩展。
+
+```python
+def log_call(func):
+    def wrapper(*args, **kwargs):
+        print(func.__name__, args, kwargs)
+        return func(*args, **kwargs)
+    return wrapper
+```
+
+实例方法、类方法和静态方法的区别：
+
+| 类型 | 第一个参数 | 适合场景 |
+|------|------------|----------|
+| 实例方法 | `self` | 访问实例状态 |
+| `@classmethod` | `cls` | 工厂方法、访问类状态、支持继承多态 |
+| `@staticmethod` | 无自动参数 | 只是放在类命名空间下的工具函数 |
+
+```python
+class User:
+    def __init__(self, name: str):
+        self.name = name
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "User":
+        return cls(data["name"])
+
+    @staticmethod
+    def normalize(name: str) -> str:
+        return name.strip().lower()
+```
+
+
+---
+
 ## 内存管理与垃圾回收
 
 ### 引用计数（Reference Counting）
@@ -286,7 +327,7 @@ c.pop()          # refcount - 1
 **缺点**：
 
 - **循环引用无法回收**：两个对象互相引用时，引用计数永远不会归零
-- **线程安全开销**：多线程下需要保护 `ob_refcnt`（这正是 GIL 存在的根本原因）
+- **线程安全开销**：多线程下需要保护 `ob_refcnt`；GIL 是 CPython 为引用计数和 C API 生态做出的历史取舍之一
 - **空间开销**：每个对象额外占用 8 字节（64 位系统）
 
 ---
@@ -869,7 +910,7 @@ except StopIteration:
 # 输出：Sub-generator returned: 30
 ```
 
-> **`yield from` 的核心价值**：它自动处理了 `send()`、`throw()`、`close()` 的转发，建立了调用方与子生成器之间的**透明双向通道**。这是 `asyncio` 协程的基础（`await` 本质上就是 `yield from`）。
+> **`yield from` 的核心价值**：它自动处理了 `send()`、`throw()`、`close()` 的转发，建立了调用方与子生成器之间的**透明双向通道**。早期 `asyncio` 与生成器协程有历史渊源；现代 `await` 基于 `__await__` 协议，可以理解为继承了“委托等待”的思想，但不要简单等同为“await 就是 yield from”。
 
 ---
 
@@ -976,7 +1017,7 @@ print(sm.send("ack"))       # "CLOSED"
 **CPython（默认实现）**：
 - 用 **C 语言**编写的 Python 解释器，由 Python 核心团队维护
 - 当你执行 `python3 xxx.py` 时，绝大多数情况下用的就是 CPython
-- **GIL 存在于 CPython 中**，是因为 CPython 选择用引用计数做内存管理
+- **GIL 存在于 CPython 中**，主要与引用计数内存管理、C 扩展生态和历史实现取舍有关
 
 **其他 Python 实现**（它们没有 GIL 或有不同的 GIL 策略）：
 
@@ -1127,7 +1168,7 @@ asyncio.run(asyncio.gather(*[fetch_url(url) for url in urls]))
 > **面试要点**：被问到"如何绕过 GIL"时，答案包括：
 > 1. **多进程**（`multiprocessing`）——最常用
 > 2. **C 扩展**（用 C/C++ 编写计算密集代码，在 C 层释放 GIL）
-> 3. **使用无 GIL 的解释器**（Jython、GraalPython 等）
+> 3. **使用无 GIL 的解释器**（Jython、GraalPython 等，更多是理论/特定生态选项，主流 CPython Web/数据栈很少这么选）
 > 4. **Python 3.13+ free-threaded 模式**（实验性，`--disable-gil` 编译选项）
 
 ---
@@ -1431,45 +1472,44 @@ for t in threads:
 print(counter)  # 可能不是200000！
 ```
 
-**示例2：列表操作不是原子的**
+**示例2：不要把“CPython 当前原子”当语言级线程安全保证**
+
+`list.append` 在标准 CPython 中通常由 C 实现并在持有 GIL 期间完成，因此单次 `append` 通常可视为原子操作；但这不是 Python 语言规范承诺，也不代表复合逻辑线程安全。真正危险的是“检查后再修改”这类多步操作：
 
 ```python
 import threading
 
 lst = []
 
-def append_many():
-    for i in range(1000):
-        lst.append(i)
+def add_if_absent(x):
+    if x not in lst:      # 读
+        lst.append(x)     # 写：读写之间可能被其他线程插入
 
-threads = [threading.Thread(target=append_many) for _ in range(10)]
+threads = [threading.Thread(target=add_if_absent, args=(1,)) for _ in range(10)]
 for t in threads:
     t.start()
 for t in threads:
     t.join()
 
-print(len(lst))  # 可能不是10000！（有些元素丢失）
-
-# 原因：list.append的内部实现涉及多个步骤
-# 1. 检查容量是否足够
-# 2. 扩容（如果需要）
-# 3. 写入新元素
-# 4. 更新长度
-# GIL可能在步骤之间切换！
+print(lst)  # 可能出现多个 1，复合不变量被破坏
 ```
 
-**哪些操作是原子的？**
+**常见边界**：
 
 ```python
-# 原子操作（单条字节码）：
-x = y              # ✅ 赋值
-x.append(y)        # ✅ append（CPython实现为原子）
-x = x + 1          # ❌ 不是原子（3条字节码）
-x += 1             # ❌ 不是原子（4条字节码）
-x = x.copy()       # ❌ 不是原子
-d[key] = value     # ✅ 字典赋值（原子）
-lst[i] = value     # ✅ 列表赋值（原子）
+# CPython 中通常是单次原子效果，但不应作为跨实现的语言保证：
+x = y
+x.append(y)
+d[key] = value
+lst[i] = value
+
+# 明确不是原子：
+x = x + 1
+x += 1
+if key not in d: d[key] = value
 ```
+
+结论：单次内置操作是否“碰巧原子”不能替代锁。只要业务不变量跨多个步骤，就用 `Lock`、队列、单线程事件循环或数据库约束保护。
 
 ---
 
@@ -1913,6 +1953,8 @@ def slow_function():
 slow_function()  # 抛出 TimeoutError
 ```
 
+> 限制：`SIGALRM` 只适用于 Unix 且只能在主线程可靠使用，不适合作为多线程 Web 服务的通用超时方案。生产中更常用请求级 timeout、线程/进程池隔离、`asyncio.wait_for` 或任务队列超时控制。
+
 ---
 
 **2. 缓存装饰器（记忆化）**
@@ -2059,6 +2101,71 @@ class User(Model):
 print(User.table_name)  # users
 print(User._fields)     # {'name': <Field>, 'age': <Field>}
 ```
+
+---
+
+## 描述符、属性查找与类型系统
+
+### 描述符协议与属性查找顺序⭐⭐⭐
+
+描述符是实现了 `__get__`、`__set__`、`__delete__` 中任意方法的对象。`property`、函数绑定方法、ORM Field、`staticmethod`、`classmethod` 都依赖描述符机制。
+
+```python
+class Field:
+    def __set_name__(self, owner, name):
+        self.name = name
+
+    def __get__(self, instance, owner):
+        if instance is None:
+            return self
+        return instance.__dict__.get(self.name)
+
+    def __set__(self, instance, value):
+        if value is None:
+            raise ValueError(f"{self.name} cannot be None")
+        instance.__dict__[self.name] = value
+
+class User:
+    name = Field()
+```
+
+属性查找大致顺序：
+
+```text
+数据描述符（有 __set__）
+  → 实例 __dict__
+  → 非数据描述符 / 类属性
+  → __getattr__ fallback
+```
+
+面试重点：数据描述符优先级高于实例属性，所以 `property` 可以拦截赋值；普通函数是非数据描述符，从类访问时会绑定成方法。
+
+### typing、Protocol 与 dataclass⭐⭐
+
+类型注解不是运行时强类型，它主要服务 IDE、mypy/pyright、FastAPI/Pydantic 和团队协作。
+
+```python
+from typing import Protocol, TypeVar
+
+class Repository(Protocol):
+    def get(self, id: int) -> str: ...
+
+T = TypeVar("T")
+def first(items: list[T]) -> T:
+    return items[0]
+```
+
+`Protocol` 表达结构化子类型：对象不需要显式继承，只要方法形状匹配即可。`dataclass(slots=True)` 可减少实例 `__dict__` 开销，但会限制动态属性，适合值对象和 DTO。
+
+工程实践：
+
+```bash
+pyright .
+mypy src/
+```
+
+建议在边界层（API、DB、消息）写清类型，在内部复杂业务对象逐步补充，不要一开始追求 100% 类型覆盖。
+
 
 ---
 
@@ -2236,6 +2343,32 @@ async def main():
 
 asyncio.run(main())
 ```
+
+---
+
+## asyncio进阶与混合并发
+
+### TaskGroup、取消传播与背压⭐⭐
+
+Python 3.11+ 的 `asyncio.TaskGroup` 让并发任务有结构化生命周期：任一子任务失败时取消同组任务，退出上下文时确保任务收束。
+
+```python
+async with asyncio.TaskGroup() as tg:
+    tg.create_task(fetch_user())
+    tg.create_task(fetch_order())
+```
+
+取消不是异常处理的细节，而是资源治理：协程应在 `CancelledError` 时释放连接、锁和临时文件，不能吞掉取消后继续运行。
+
+CPU 密集任务不要直接跑在事件循环里；可以用 executor 隔离：
+
+```python
+loop = asyncio.get_running_loop()
+result = await loop.run_in_executor(process_pool, cpu_heavy, data)
+```
+
+背压：生产者速度大于消费者时，必须用有界队列、连接池、信号量或限流控制，否则只是把过载藏进内存。
+
 
 ---
 
@@ -2509,6 +2642,21 @@ async def send_notification(email: str, background_tasks: BackgroundTasks):
 
 ---
 
+## 框架选型：Flask、Django、FastAPI
+
+| 框架 | 核心特点 | 适合场景 |
+|------|----------|----------|
+| Flask | 轻量、自由度高、同步 WSGI 为主 | 小服务、内部工具、需要自选组件 |
+| Django | batteries included，ORM/Admin/认证齐全 | 业务后台、管理系统、快速 CRUD |
+| FastAPI | ASGI、类型注解、自动 OpenAPI | API 服务、异步 IO、强契约接口 |
+
+WSGI 与 ASGI 的区别：WSGI 是传统同步接口；ASGI 支持 async、WebSocket、lifespan。FastAPI 路由若是 `async def`，内部却调用阻塞 DB/HTTP 客户端，会阻塞事件循环；要么使用异步客户端，要么丢到 executor/线程池。
+
+框架选型不要只看吞吐 benchmark，还要看团队熟悉度、ORM 复杂度、测试工具、生态插件、部署和可观测性。
+
+
+---
+
 ## 性能优化与调试
 
 ### cProfile 性能分析
@@ -2689,18 +2837,24 @@ def retry_on_deadlock(max_attempts=3):
 
 @retry_on_deadlock(max_attempts=3)
 @transaction.atomic
-def transfer_money(from_account, to_account, amount):
-    # 按 ID 顺序加锁，避免死锁
-    accounts = sorted([from_account, to_account], key=lambda x: x.id)
-    
-    for account in accounts:
-        account = Account.objects.select_for_update().get(id=account.id)
-    
+def transfer_money(from_account_id, to_account_id, amount):
+    # 按 ID 顺序加锁，避免两个转账方向相反时互相等待
+    ids = sorted([from_account_id, to_account_id])
+    locked = {
+        account.id: account
+        for account in Account.objects.select_for_update().filter(id__in=ids).order_by("id")
+    }
+
+    from_account = locked[from_account_id]
+    to_account = locked[to_account_id]
+
+    if from_account.balance < amount:
+        raise ValueError("insufficient balance")
+
     from_account.balance -= amount
-    from_account.save()
-    
     to_account.balance += amount
-    to_account.save()
+    from_account.save(update_fields=["balance"])
+    to_account.save(update_fields=["balance"])
 ```
 
 ---
@@ -2894,6 +3048,47 @@ class Singleton:
 #### Q22：`dataclass` 和普通类相比解决了什么问题？`slots=True` 有什么收益和代价？
 
 **答**：`dataclass` 主要解决样板代码问题，可以自动生成 `__init__`、`__repr__`、`__eq__` 等方法，让”数据承载对象”更简洁。它适合字段明确、行为较少的值对象、配置对象和 DTO；如果类有复杂不变量、继承体系或自定义初始化流程，仍然需要谨慎设计。`slots=True` 的收益是减少每个实例的内存占用、阻止随意新增属性、一定程度提升属性访问局部性；代价是灵活性下降，比如不能再自由挂临时属性，也可能影响某些依赖 `__dict__` 的调试、序列化和动态 patch 场景。
+
+#### Q23: Python 属性查找顺序是什么？数据描述符和非数据描述符有什么区别？
+
+属性查找优先级大致是：数据描述符（实现 `__set__`/`__delete__`）→ 实例 `__dict__` → 非数据描述符/类属性 → `__getattr__`。数据描述符能覆盖实例属性，所以 `property` setter 可以控制赋值；普通函数是非数据描述符，只有实例字典没有同名属性时才从类上取出并绑定成方法。这个顺序解释了为什么 ORM 字段、缓存属性和动态代理都能拦截属性访问。
+
+#### Q24: MRO 和 `super()` 是怎么工作的？多继承里为什么要写协作式初始化？
+
+Python 新式类使用 C3 线性化生成 MRO。`super()` 不是“调用父类”，而是沿当前类的 MRO 找下一个实现。多继承中每个类都应调用 `super().__init__()` 并用兼容参数，否则 MRO 链会断，某些基类初始化被跳过。
+
+#### Q25: `__eq__` 和 `__hash__` 的契约是什么？为什么重写 eq 后对象可能不能放进 set？
+
+契约是：如果 `a == b`，则 `hash(a) == hash(b)` 必须成立。对象可变且参与 hash 的字段变化，会破坏 dict/set 的桶定位。Python 中重写 `__eq__` 后默认会把 `__hash__` 设为 `None`，让对象不可哈希，避免错误地作为 key。不可变值对象可用 `@dataclass(frozen=True)` 自动生成一致实现。
+
+#### Q26: `Protocol` 和普通继承接口有什么区别？什么时候用 typing 泛型？
+
+`Protocol` 表达结构化子类型：对象只要方法和属性形状匹配，不需要显式继承。它适合插件、仓储接口、第三方对象适配。泛型用于容器和工具函数保留类型关系，例如 `def first(items: list[T]) -> T`。类型注解主要服务静态检查和框架契约，不会让 Python 变成运行时强类型。
+
+#### Q27: `asyncio.TaskGroup` 相比 `create_task` 有什么价值？取消传播要注意什么？
+
+`TaskGroup` 提供结构化并发：任务在上下文内创建，退出时等待收束；任一任务失败会取消同组任务并聚合异常。取消传播时协程应正确释放连接、锁和临时资源，不应吞掉 `CancelledError` 后继续执行。CPU 密集任务不能直接放事件循环里，应使用 `run_in_executor` 或进程池。
+
+#### Q28: WSGI 和 ASGI 的区别是什么？FastAPI 的 `async def` 一定更快吗？
+
+WSGI 是传统同步接口，适合 Flask/Django 的同步请求模型；ASGI 支持 async、WebSocket、lifespan，适合 FastAPI/Starlette。`async def` 不一定更快：如果内部调用阻塞 DB/HTTP 客户端，会阻塞事件循环，反而拖慢所有请求。要么使用异步客户端，要么放入线程池/进程池。
+
+#### Q29: pytest fixture、mock、parametrize 分别解决什么问题？
+
+fixture 管理测试资源生命周期，如数据库会话、HTTP client、临时目录；mock 隔离外部依赖或制造异常路径；parametrize 用多组输入覆盖边界条件。好的测试不仅看覆盖率，还要看断言是否验证业务不变量，以及是否覆盖失败、超时、并发和回滚路径。
+
+#### Q30: 依赖管理为什么需要 lockfile？`uv`、`poetry`、`pip`、`venv` 怎么分工？
+
+`venv` 隔离环境，`pip` 安装包，`poetry` 管理项目元数据和 lockfile，`uv` 提供更快的解析、安装和同步能力。lockfile 锁定间接依赖版本，保证 CI、开发机、生产构建一致。没有 lockfile 时，同一个 requirements 范围可能在不同时间解析出不同依赖树。
+
+#### Q31: Python 3.11-3.13 有哪些值得关注的变化？free-threading 现在能直接用于生产替代 GIL 吗？
+
+3.11 引入 `TaskGroup`、`ExceptionGroup` 并显著优化解释器性能；3.12 持续改进 typing 和性能；3.13 引入实验性的 free-threaded 构建方向。free-threading 仍要关注 C 扩展兼容、生态成熟度和性能回归，不能简单当作“Python 多线程终于完全替代多进程”的生产默认答案。
+
+#### Q32: CPython 中 `list.append` 是原子的吗？为什么仍然不建议依赖它做线程安全设计？
+
+标准 CPython 中单次 `list.append` 通常在持有 GIL 的 C 实现里完成，可视为当前实现下的原子效果；但这不是 Python 语言规范保证，也不适用于所有解释器和未来实现。更重要的是业务逻辑通常不是单次 append，而是“检查再写”“读改写”“多对象更新”，这些复合不变量必须用锁、队列、事务或单线程事件循环保护。
+
 
 ### 开放式设计题
 

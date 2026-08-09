@@ -1,5 +1,7 @@
 # MySQL 深入
 
+> **版本基线**：本文默认以 **MySQL 8.0** 为准。涉及 5.7 与 8.0 行为差异处会显式标注（如 redo log 配置、复制术语、降序索引等）。
+
 ---
 
 ## 📑 目录
@@ -7,6 +9,7 @@
 ### 存储与索引
 - [存储引擎](#存储引擎)
 - [日志机制](#日志机制)
+- [InnoDB 内存体系](#innodb-内存体系)
 - [索引原理](#索引原理)
   - [B+Tree结构](#btree结构)
   - [索引类型](#索引类型)
@@ -17,30 +20,19 @@
 
 ### 执行与事务
 - [SQL执行机制](#sql执行机制)
-  - [一条SQL的生命周期](#一条sql的生命周期)
-  - [连接与会话状态](#连接与会话状态)
-  - [解析器与预处理器](#解析器与预处理器)
-  - [优化器与执行器](#优化器与执行器)
-  - [EXPLAIN详解](#explain详解)
-  - [索引选择](#索引选择)
-  - [预处理语句](#预处理语句)
 - [事务与锁](#事务与锁)
   - [事务隔离级别](#事务隔离级别)
   - [MVCC机制](#mvcc机制)
   - [锁类型](#锁类型)
   - [死锁定位](#死锁定位)
 
-### 复制与实践
+### 复制、DDL 与运维
 - [复制与一致性](#复制与一致性)
-  - [主从复制](#主从复制)
-  - [读写一致性](#读写一致性)
+- [Online DDL 与变更](#online-ddl-与变更)
+- [备份与恢复](#备份与恢复)
+- [MySQL 8.0 特性速览](#mysql-80-特性速览)
 - [性能优化](#性能优化)
-  - [慢查询优化](#慢查询优化)
-  - [批量操作](#批量操作)
-  - [深分页优化](#深分页优化)
 - [数据建模](#数据建模)
-  - [范式与反范式](#范式与反范式)
-  - [分库分表](#分库分表)
 - [实战案例](#实战案例)
 - [面试题自查](#面试题自查)
 
@@ -217,10 +209,13 @@ UPDATE accounts SET balance = 900 WHERE id = 1;
 
 `innodb_flush_log_at_trx_commit` 会改变第 2 步的严格程度：`=1` 每次提交都 fsync（最安全）；`=2` 只写 OS 缓存；`=0` 可能每秒才刷——都更快，但宕机可能丢最近已「提交」的事务。
 
+**「双 1」**：生产资损场景通常要求 `innodb_flush_log_at_trx_commit=1` **且** `sync_binlog=1`（每次提交 fsync binlog）。只改其中一个仍可能在崩溃后出现 redo/binlog 不一致或主从缺口；非资损、可接受秒级丢数时再成对放宽（如 2 + 100/1000），并写进故障预案。
+
 **redo log 是循环写的**：
 
 ```
-redo log 文件（默认 2 个，每个 48MB）
+redo log 文件（8.0.30 之前默认 2 个 ib_logfile，各 48MB；
+8.0.30+ 改为 innodb_redo_log_capacity 统一控制总容量，默认 100MB）
 ┌──────────────┐ ┌──────────────┐
 │ ib_logfile0  │ │ ib_logfile1  │
 │              │ │              │
@@ -243,7 +238,10 @@ write pos 追上 checkpoint → 必须先刷脏页，腾出空间
 binlog 格式：
 1. STATEMENT：记录 SQL 语句（体积小，但可能不确定性）
 2. ROW：记录行变更的前后镜像（体积大，但精确）
-3. MIXED：默认 STATEMENT，遇到不确定函数自动切换为 ROW
+3. MIXED：以 STATEMENT 为主，遇到不确定函数自动切换为 ROW
+
+注意：MySQL 5.7.7 起服务器默认 binlog_format=ROW；
+「默认 STATEMENT」只是 MIXED 模式内部的回退策略，不是服务器默认值。
 
 生产环境推荐：ROW 格式（精确，不会因函数、触发器导致主从不一致）
 ```
@@ -308,6 +306,116 @@ UPDATE accounts SET balance = 900 WHERE id = 1;
 
 ---
 
+## InnoDB 内存体系
+
+> 面试高频：Buffer Pool 的 LRU 为什么不是标准 LRU？Change Buffer 和 redo log 有什么区别？doublewrite 解决什么问题？
+
+### Buffer Pool（缓冲池）⭐⭐⭐
+
+**定位**：InnoDB 最大的内存区域（生产常配到物理内存的 50%~70%），缓存**数据页和索引页**（16KB/页），所有读写都先经过它。
+
+```
+读路径：SQL → Buffer Pool 命中？→ 命中直接返回
+                              → 未命中则从磁盘读入 Buffer Pool 再返回
+写路径：SQL → 直接改 Buffer Pool 中的页（变脏页）→ 写 redo log → 返回
+              脏页由后台线程异步刷盘
+```
+
+**为什么需要它**：磁盘随机 I/O（机械盘毫秒级）与内存访问（纳秒级）差 5~6 个数量级。Buffer Pool 把「每次读写都落盘」变成「内存操作 + 异步刷盘」，是 InnoDB 性能的地基。
+
+#### LRU 链表：InnoDB 的改良版
+
+标准 LRU 的问题：**全表扫描或预读会把真正的热数据挤出去**（扫描的页只读一次，却占据链表头部）。
+
+InnoDB 的解法：**LRU 分为新生代（new，后 5/8）和老年代（old，前 3/8）**：
+
+```
+新读入的页 → 插入 old 区头部（不是整个链表头部！）
+old 区的页被再次访问 → 且距首次读入超过 innodb_old_blocks_time（默认1s）
+                     → 才晋升到 new 区头部
+```
+
+- 全表扫描的页只进 old 区，很快从 old 区尾部被淘汰，**不会污染 new 区的热数据**。
+- `innodb_old_blocks_time` 防止「扫描时同一页被连续访问多次」误判为热数据。
+
+**相关链表**：
+| 链表 | 作用 |
+|------|------|
+| LRU 链表 | 管理所有缓存页（含空闲页、干净页、脏页）的淘汰顺序 |
+| Free 链表 | 空闲页，新读入的页从这里取 |
+| Flush 链表 | 只含**脏页**，按最早修改的 LSN 排序，刷脏页时按序写盘 |
+
+#### 脏页刷新（Checkpoint 的触发）
+
+redo log 是循环写的，空间用完前必须把对应的脏页刷盘（否则崩溃时无法重放）。刷脏的触发时机：
+
+1. **redo log 快满**（sharp checkpoint，会阻塞写入，要尽量避免）
+2. **Buffer Pool 空间不足**，需要淘汰脏页时先刷盘
+3. **后台线程定期刷**（`innodb_io_capacity` 控制每秒刷盘页数，应按磁盘 IOPS 设置）
+4. **MySQL 正常关闭**时全量刷盘
+
+**Checkpoint 的本质**：记录「LSN ≤ checkpoint 的 redo 都已落盘」，崩溃恢复只需从 checkpoint 之后开始重放，缩短恢复时间。
+
+### Change Buffer（写缓冲）⭐⭐
+
+**问题**：更新**非唯一二级索引**时，如果目标索引页不在 Buffer Pool，难道要先从磁盘读进来再改？（一次随机读 I/O）
+
+**解法**：不在内存的二级索引页，修改先记入 Change Buffer（它在 Buffer Pool 中，也会持久化到系统表空间），**直接返回**；等以后该页被读入 Buffer Pool 时再 merge（合并）真实修改。
+
+```
+UPDATE t SET name='x' WHERE id=1;   -- name 上有普通二级索引
+索引页在内存？ → 是：直接改
+              → 否：修改记入 Change Buffer，返回（省一次随机读）
+后续该页被读入 → merge Change Buffer 中的修改
+```
+
+**限制**：只适用于**非唯一**二级索引——唯一索引必须读页检查唯一性，无法缓冲。
+
+**Change Buffer vs redo log**（经典面试题）：
+- Change Buffer 省的是「读索引页进内存」的**随机读 I/O**；
+- redo log 保证的是「修改不丢」的**持久性**（Change Buffer 本身的修改也写 redo log）；
+- 两者解决不同问题，不是替代关系。
+
+**适用场景**：写多读少、且写入后不会立刻读该页的业务（如日志、流水）。读多写少的场景 Change Buffer 收益低还占内存，可调小 `innodb_change_buffer_max_size`。
+
+### Doublewrite Buffer（双写缓冲）⭐⭐
+
+**问题——页断裂（partial page write）**：InnoDB 页 16KB，而文件系统/磁盘原子写单位通常只有 4KB（或 512B）。刷脏页时宕机，可能只写了一半——**页损坏**。此时 redo log 也救不了：redo 是「在完好的页上重放修改」，页本身坏了无法重放。
+
+**解法**：刷脏页时，先把页**顺序写**到共享表空间的 doublewrite 区域（2MB，顺序写很快），再写真正的数据页。崩溃恢复时若发现页损坏，从 doublewrite 副本恢复该页，再重放 redo。
+
+```
+脏页刷盘：页 → doublewrite 区（顺序写，fsync）
+             → 各数据文件（随机写）
+宕机恢复：页校验失败？→ 从 doublewrite 拷贝完整页 → 重放 redo
+```
+
+代价是写放大（同一页写两次），但 doublewrite 区是顺序写，实际损耗很小。若文件系统/存储本身保证 16KB 原子写（如 ZFS、部分支持原子写的 SSD），可以关闭。
+
+### Undo 表空间与 Purge
+
+- **undo log 的归宿**：8.0 默认 2 个 undo 表空间（`innodb_undo_tablespaces`），可随时在线增删（5.7 时代 undo 在系统表空间里，膨胀后无法回收——这是 5.7 的经典坑）。
+- **Purge 线程**：事务提交后，undo 版本不能立刻删（可能有其他事务的 Read View 还要读它）。Purge 线程负责清理「不再被任何活跃 Read View 引用」的旧版本，并真正删除带 delete-mark 的记录。
+- **长事务的危害在这里落地**：一个老事务的 Read View 不释放 → purge 无法清理它之后的所有版本 → undo 表空间膨胀、版本链变长、查询变慢。这就是「线上要避免长事务」的底层原因。
+
+### 一张图串起来
+
+```
+UPDATE accounts SET balance=900 WHERE id=1;
+
+内存中：
+  ① 改 Buffer Pool 中的数据页（脏页）     ← LRU/Flush 链表管理
+  ② 二级索引页不在内存 → 记 Change Buffer
+  ③ 写 undo（旧值 1000，供回滚/MVCC）     ← Purge 线程事后清理
+  ④ 写 redo log buffer → 提交时 fsync      ← 崩溃恢复的保障
+
+异步落盘：
+  ⑤ 脏页 → doublewrite 区 → 数据文件      ← 防页断裂
+  ⑥ checkpoint 推进，redo 空间循环复用
+```
+
+---
+
 ## 索引原理
 
 ### B+Tree结构
@@ -349,78 +457,21 @@ UPDATE accounts SET balance = 900 WHERE id = 1;
 
 ##### 1. 插入导致的分裂
 
-**场景**：向已满的叶子节点插入key
+**规则**：节点 key 数超过上限 → 从中间一分为二 → 中间 key 提升到父节点 → 父节点若也满则**递归分裂**，根节点分裂时树高 +1。
 
-**分裂步骤**：
+**一个完整例子（3 阶 B+ 树，节点最多 2 个 key，父节点也满 → 递归分裂）**：
 ```
-【初始状态】叶子节点已满（假设最多3个key）
-[10, 20, 30]  ← 已满
-
-【插入 25】
-Step 1: 发现节点已满，触发分裂
-Step 2: 将节点分成两个
-  左节点: [10, 20]
-  右节点: [25, 30]
-
-Step 3: 中间key（20）提升到父节点
-  父节点: [..., 20, ...]
-         /            \
-  [10, 20]          [25, 30]
-```
-
-**完整分裂过程（含父节点分裂）**：
-```
-【初始】3阶B+树（每个节点最多2个key）
-         [20]
-        /    \
-    [10,15]  [20,30]
-
-【插入 25】
-Step 1: 找到插入位置（右叶子节点）
-    [20,30] → 插入25 → [20,25,30]（超过2个key，分裂）
-
-Step 2: 叶子节点分裂
-    左: [20]
-    右: [25,30]
-    提升中间key: 25
-
-Step 3: 25插入父节点
-    [20] → 插入25 → [20,25]（未满，完成）
-
-【最终结果】
-         [20, 25]
-        /    |    \
-    [10,15] [20] [25,30]
-```
-
-**父节点也满的情况（递归分裂）**：
-```
-【初始】父节点已满
+【初始】
            [20, 40]
           /   |    \
       [10] [20,30] [40,50]
 
-【插入 45 到 [40,50]】
-Step 1: 叶子节点分裂
-    [40,50] → 插入45 → [40,45,50] → 分裂
-    左: [40]
-    右: [45,50]
-    提升: 45
+【插入 45】
+① 叶子 [40,50] 满 → 分裂为 [40] 和 [45,50]，提升 45
+② 父节点 [20,40] 插入 45 后也满 → 分裂为 [20] 和 [45]，提升 40
+③ 根节点不存在 → 创建新根 [40]，树高 +1
 
-Step 2: 45插入父节点 [20,40]
-    [20,40] → 插入45 → [20,40,45]（超过2个key，分裂）
-
-Step 3: 父节点分裂
-    左: [20]
-    右: [45]
-    提升: 40
-
-Step 4: 创建新根节点
-    [40]
-   /    \
- [20]   [45]
-
-【最终结果】树高度+1
+【结果】
               [40]
             /      \
          [20]      [45]
@@ -428,55 +479,27 @@ Step 4: 创建新根节点
     [10]  [20,30] [40] [45,50]
 ```
 
+要点：B+ 树**通过根节点分裂长高**，所以所有叶子始终在同一层（保持平衡）；中间 key 提升后在父节点中充当「分隔牌」，右子树的 key 都 ≥ 它。
+
 ---
 
 ##### 2. 删除导致的合并/重分配
 
-**场景**：删除key后，节点key数量< m/2
+**规则**：删除后节点 key 数低于下限（< m/2）→ 先尝试**向兄弟节点借 key**（重分配，同时更新父节点分隔 key）→ 兄弟也不够借时**与兄弟合并**（删除父节点中的分隔 key，可能递归向上，根节点被删空时树高 -1）。
 
-**策略1：从兄弟节点借key（重分配）**
 ```
-【初始】
+【借 key】删除 30 后右节点欠员，左兄弟 [10,15] 有富余：
+         [20]                    [15]
+        /    \      → 借出15 →   /    \
+    [10,15]  [20]            [10]    [15,20]
+
+【合并】删除 30 后左右都只剩 1 个 key，无法借：
          [20]
-        /    \
-    [10,15]  [20,30]
-
-【删除 30】
-Step 1: 删除后，右节点只有1个key
-    [20] → 不满足最少2个key的要求
-
-Step 2: 尝试从左兄弟借（左兄弟有富余）
-    左兄弟: [10,15] → 借出15
-    右节点: [20] → 接收15 → [15,20]
-
-Step 3: 更新父节点的分隔key
-    [20] → [15]
-
-【最终结果】
-         [15]
-        /    \
-    [10]    [15,20]
+        /    \      → 合并 →   [10,20]   （树高 -1）
+    [10]    [20]
 ```
 
-**策略2：无法借key，合并节点**
-```
-【初始】
-         [20]
-        /    \
-    [10]    [20,30]
-
-【删除 30】
-Step 1: 删除后，右节点只有1个key [20]
-Step 2: 左兄弟也只有1个key [10]，无法借
-Step 3: 合并两个节点
-    [10] + [20] → [10,20]
-
-Step 4: 删除父节点中的分隔key
-    [20] → 删除
-
-【最终结果】树高度-1
-    [10,20]
-```
+要点：优先借 key 而非合并（合并会改变父节点，代价更大）；InnoDB 实际实现还有**页填充因子**（默认 15/16 满才分裂）等工程优化，减少分裂频率。
 
 ---
 
@@ -492,47 +515,7 @@ Step 4: 删除父节点中的分隔key
 | **范围查询** | 需要中序遍历（O(n)） | 叶子链表扫描（O(logn + k)） |
 | **单点查询** | 可能在非叶子节点命中（快） | 一定要到叶子节点（稳定） |
 
-**为什么MySQL选择B+树？**
-
-1. **范围查询高效**：
-   ```sql
-   SELECT * FROM users WHERE age BETWEEN 20 AND 30;
-   
-   B树：需要中序遍历整棵树（随机I/O）
-   B+树：找到 age=20 的叶子节点，沿链表扫描（顺序I/O）
-   ```
-
-2. **非叶子节点容量更大**：
-   ```
-   B树节点：[key1, data1, ptr1, key2, data2, ptr2]
-   - data可能很大（几KB），节点容纳key少
-   
-   B+树节点：[key1, ptr1, key2, ptr2, key3, ptr3]
-   - 只有key和指针，节点容纳key多
-   - 树高度更低，I/O更少
-   
-   举例（16KB页）：
-   B树：假设data 1KB，一个节点最多16个key → 4层树存 16^4 = 65万条
-   B+树：假设key+ptr 14B，一个节点最多1170个key → 3层树存 2000万条
-   ```
-
-3. **磁盘预读优化**：
-   ```
-   磁盘读取单位：页（16KB）
-   B+树叶子节点：相邻key的data也相邻 → 一次I/O读多条记录
-   B树：data分散在各层 → 需要多次I/O
-   ```
-
-4. **查询性能稳定**：
-   ```
-   B树：查找路径不固定（可能在非叶子节点命中）
-   - 最好：O(1)（根节点命中）
-   - 最坏：O(logn)（叶子节点）
-   
-   B+树：查找路径固定（一定到叶子节点）
-   - 稳定：O(logn)
-   - 有利于查询性能预测
-   ```
+**选型一句话**：磁盘页为 IO 单位时，B+ 树「矮树 + 叶子链表」同时吃到点查稳定与范围顺序扫；上表对比已覆盖细节，不必再背四段展开。
 
 ---
 
@@ -561,7 +544,7 @@ InnoDB是**聚簇索引**存储引擎：
       /   \    /   \
   [id=1]  [id=20] [id=50] [id=80]
    |data|  |data|  |data|  |data|
-   
+
 数据和索引存储在一起！
 
 【二级索引（非聚簇索引）】
@@ -594,7 +577,7 @@ InnoDB是**聚簇索引**存储引擎：
    ```
    -- 有显式主键：可以直接用主键查询（一次I/O）
    SELECT * FROM users WHERE id = 123;
-   
+
    -- 无显式主键：需要全表扫描或二级索引（多次I/O）
    SELECT * FROM users WHERE email = 'alice@example.com';
    ```
@@ -762,19 +745,27 @@ SELECT * FROM users WHERE b = 2;
 
 #### 索引顺序设计
 
-**原则**：区分度高的列放在前面。
+**原则**：优先看查询形态，而不是只看区分度。
+
+```text
+经验顺序：等值列在前 → 范围列在后 → 排序/分组列按序
+反例：常查 WHERE gender=? AND created_at BETWEEN ...，
+     把低区分度的 gender 放前面反而合理（等值命中后再走范围）
+```
 
 ```sql
--- ❌ 不好：性别只有2个值，区分度低
-CREATE INDEX idx_bad ON users(gender, age, city);
+-- 若主要查询是 WHERE gender=? AND city=?，低区分度列放前也没问题
+CREATE INDEX idx_gc ON users(gender, city);
 
--- ✅ 好：城市区分度高
-CREATE INDEX idx_good ON users(city, age, gender);
+-- 若主要查询是 WHERE city=? AND age>?，则 city 在前
+CREATE INDEX idx_ca ON users(city, age);
 ```
+
+区分度用于辅助判断（区分度太低的列单独建索引意义不大），但不是索引列顺序的唯一依据。
 
 **计算区分度**：
 ```sql
-SELECT 
+SELECT
   COUNT(DISTINCT city) / COUNT(*) AS city_selectivity,
   COUNT(DISTINCT age) / COUNT(*) AS age_selectivity,
   COUNT(DISTINCT gender) / COUNT(*) AS gender_selectivity
@@ -836,18 +827,19 @@ N 次回表 ≈ N 次「随机找主键页」
 -- 场景：查询用户信息，条件是 name
 -- 表结构：id(主键), name, age, email, address
 
--- ❌ 慢：大量回表
-SELECT * FROM users WHERE name LIKE 'A%';
+-- 延迟关联的真正收益场景：深分页（大 OFFSET）
+-- ❌ 慢：LIMIT 100000, 10 需要先扫 100010 行并逐行回表再丢弃
+SELECT * FROM users WHERE name LIKE 'A%' ORDER BY id LIMIT 100000, 10;
 
--- ✅ 快：覆盖索引 + 延迟关联
+-- ✅ 快：子查询只走覆盖索引定位 10 个 id，再回表 10 次
 CREATE INDEX idx_name ON users(name);
 
-SELECT u.* 
+SELECT u.*
 FROM users u
 INNER JOIN (
-  SELECT id FROM users WHERE name LIKE 'A%' LIMIT 1000
+  SELECT id FROM users WHERE name LIKE 'A%' ORDER BY id LIMIT 100000, 10
 ) t ON u.id = t.id;
--- 先用覆盖索引查出 id，再回表（减少回表次数）
+-- 回表次数从 100010 降到 10
 ```
 
 ---
@@ -1078,7 +1070,7 @@ EXPLAIN SELECT * FROM users WHERE name = 'Alice';
 | **type** ⭐ | 访问类型 | **性能从好到差**：system > const > eq_ref > ref > range > index > ALL |
 | **possible_keys** | 可能用到的索引 | - |
 | **key** ⭐ | 实际使用的索引 | NULL表示未使用索引 |
-| **key_len** | 索引长度 | 越短越好 |
+| **key_len** | 实际使用的索引字节数 | 联合索引中越大通常表示用到了更多列；结合 key/rows 判断，不是越短越好 |
 | **ref** | 索引引用 | const, func |
 | **rows** ⭐ | 扫描行数 | 越少越好 |
 | **filtered** | 过滤比例 | 百分比，越大越好 |
@@ -1098,7 +1090,7 @@ EXPLAIN SELECT * FROM users WHERE name = 'Alice';
 
 3. **eq_ref**：唯一索引扫描（JOIN时使用）
    ```sql
-   SELECT * FROM orders o 
+   SELECT * FROM orders o
    JOIN users u ON o.user_id = u.id;  -- u表 type: eq_ref
    ```
 
@@ -1160,9 +1152,9 @@ CREATE TABLE orders (
 );
 
 -- 查询
-SELECT * FROM orders 
-WHERE user_id = 123 AND status = 1 
-ORDER BY created_at DESC 
+SELECT * FROM orders
+WHERE user_id = 123 AND status = 1
+ORDER BY created_at DESC
 LIMIT 10;
 ```
 
@@ -1464,19 +1456,19 @@ def is_visible(trx_id, read_view):
     # 1. 如果记录的事务ID等于当前事务ID，可见（自己的修改）
     if trx_id == read_view.creator_trx_id:
         return True
-    
+
     # 2. 如果记录的事务ID小于最小活跃事务ID，可见（已提交）
     if trx_id < read_view.min_trx_id:
         return True
-    
+
     # 3. 如果记录的事务ID大于等于下一个要分配的事务ID，不可见（未来事务）
     if trx_id >= read_view.max_trx_id:
         return False
-    
+
     # 4. 如果记录的事务ID在活跃事务列表中，不可见（未提交）
     if trx_id in read_view.m_ids:
         return False
-    
+
     # 5. 否则可见（已提交但不在活跃列表）
     return True
 ```
@@ -1490,8 +1482,9 @@ def is_visible(trx_id, read_view):
 - 可以读到其他事务已提交的数据（不可重复读）
 
 **REPEATABLE READ（RR）**：
-- 事务开始时创建Read View，整个事务期间使用同一个
+- 事务内**第一次一致性读（第一次普通 SELECT）** 时创建 Read View，之后整个事务复用同一个
 - 读到的数据始终一致（可重复读）
+- 注意：`BEGIN` 后若很久才第一次 SELECT，中间别人已提交的修改在第一次读时可见
 
 ```sql
 -- RR隔离级别
@@ -1511,7 +1504,7 @@ T1: SELECT balance FROM accounts WHERE id = 1;  -- 仍然读到1000（使用旧�
 
 **Step 1：创建/复用Read View**
 ```
-T1事务开始时创建Read View：
+T1 第一次执行普通 SELECT 时创建 Read View（不是 BEGIN 那一刻）：
 - m_ids: [100, 102, 105]  （活跃事务列表）
 - min_trx_id: 100
 - max_trx_id: 106  （下一个要分配的事务ID）
@@ -1598,7 +1591,7 @@ T1第二次查询（使用同一个Read View）：
 ```
 
 **关键点**：
-- T1的Read View在事务开始时创建，**不会更新**
+- T1的Read View在第一次一致性读时创建，之后**不会更新**
 - T2的修改对T1不可见（trx_id=103在T1的活跃列表中）
 - T1读取的是undo log中的历史版本
 
@@ -1616,11 +1609,11 @@ T2:                                                           COMMIT;
 T1: SELECT COUNT(*) FROM users WHERE age BETWEEN 20 AND 30;  -- 期望还是10
 ```
 
-**MVCC的局限**：
-- MVCC只能防止**UPDATE**导致的幻读
-- 对于**INSERT**的新记录，MVCC无能为力（新记录在undo log中没有历史版本）
+**先厘清概念**：
+- 幻读的核心是**同一事务内两次范围查询的结果集不同**（多出行或少出行），主要由 INSERT/DELETE 引起；UPDATE 引起的同行值变化属于不可重复读范畴。
+- 新插入的行也有 `trx_id`，可见性判断不依赖它有历史版本——所以 MVCC 对 INSERT 同样有效。
 
-**InnoDB的解决方案：MVCC + Next-Key Lock**
+**InnoDB 的解决方案：快照读靠 MVCC，当前读靠 Next-Key Lock**
 
 1. **快照读（Snapshot Read）**：
    ```sql
@@ -1650,24 +1643,20 @@ T2 INSERT新记录：
 关键：T2的trx_id在T1的活跃列表中
 ```
 
-**什么情况下MVCC无法防止幻读？**
+**MVCC 防不住的场景：当前读**
 ```sql
--- 场景：T2在T1的Read View创建之前就已提交
-
-T2: BEGIN;
-T2: INSERT INTO users (age) VALUES (25);  -- trx_id=99
-T2: COMMIT;
-
-T1: BEGIN;  -- 此时创建Read View: min_trx_id=100
-T1: SELECT COUNT(*) FROM users WHERE age BETWEEN 20 AND 30;
-    -- T2的记录 trx_id=99 < min_trx_id=100 → 可见！
-    -- 如果T1之前在其他事务中查过，现在看到了新记录 → 幻读
+T1: BEGIN;
+T1: SELECT COUNT(*) FROM users WHERE age BETWEEN 20 AND 30;  -- 快照读：10
+T2: INSERT INTO users (age) VALUES (25); COMMIT;
+T1: UPDATE users SET level=1 WHERE age BETWEEN 20 AND 30;    -- 当前读：影响到 11 行！
+T1: SELECT COUNT(*) FROM users WHERE age BETWEEN 20 AND 30;  -- 11（自己改的可见）
 ```
+当前读（UPDATE/FOR UPDATE）读的是最新数据而非快照，T2 新插入的行会被 UPDATE 命中，随后的快照读又能看到自己改过的这行——这就是 RR 下仍可能出现的幻读。要彻底防止，范围当前读必须配合 Next-Key Lock 阻止间隙插入。
 
 **总结**：
-- **MVCC**：防止UPDATE导致的不可重复读
-- **Next-Key Lock**：防止INSERT/DELETE导致的幻读
-- **RR隔离级别** = MVCC + Next-Key Lock（两者配合）
+- **快照读（普通 SELECT）**：靠 MVCC 的 Read View 过滤不可见版本，RR 下可防幻读
+- **当前读（FOR UPDATE/UPDATE/DELETE）**：靠 Next-Key Lock 锁定记录+间隙，阻止其他事务插入
+- **RR 隔离级别** = 快照读走 MVCC + 当前读走 Next-Key Lock（两者配合）
 
 ---
 
@@ -1686,13 +1675,17 @@ SELECT * FROM users WHERE id = 1;  -- 快照读
 
 **当前读（Current Read）**：
 - `SELECT ... FOR UPDATE`（排他锁）
-- `SELECT ... LOCK IN SHARE MODE`（共享锁）
+- `SELECT ... FOR SHARE`（共享锁；8.0 推荐写法，旧写法 `LOCK IN SHARE MODE` 仍兼容）
 - `UPDATE`, `DELETE`, `INSERT`
 - 读取最新版本的数据
 - **加锁**
 
 ```sql
 SELECT * FROM users WHERE id = 1 FOR UPDATE;  -- 当前读，加排他锁
+SELECT * FROM users WHERE id = 1 FOR SHARE;   -- 当前读，加共享锁
+-- 不等待 / 跳过已锁行（8.0+，适合秒杀占库存、队列抢任务）：
+SELECT * FROM jobs WHERE status='ready' LIMIT 1 FOR UPDATE NOWAIT;
+SELECT * FROM jobs WHERE status='ready' LIMIT 1 FOR UPDATE SKIP LOCKED;
 ```
 
 ---
@@ -1718,6 +1711,79 @@ LOCK TABLES users WRITE;  -- 锁整张表（很少用）
 
 ---
 
+#### 意向锁（Intention Lock）⭐⭐
+
+**问题**：事务 A 锁了某一行（行锁），事务 B 想锁整张表（如 `ALTER TABLE`）——B 怎么快速知道表里有没有行被锁？逐行检查太慢。
+
+**解法**：事务加行锁**之前**，先在表上加一把**意向锁**：
+- 加行级 X 锁前 → 先加表级 **IX（意向排他锁）**
+- 加行级 S 锁前 → 先加表级 **IS（意向共享锁）**
+
+意向锁是**表级**的，只和「表级锁」互斥，**行锁之间不会因为意向锁互相阻塞**：
+
+|  | IS | IX | S（表锁） | X（表锁） |
+|--|----|----|----|----|
+| **IS** | ✅ | ✅ | ✅ | ❌ |
+| **IX** | ✅ | ✅ | ❌ | ❌ |
+| **S** | ✅ | ❌ | ✅ | ❌ |
+| **X** | ❌ | ❌ | ❌ | ❌ |
+
+关键结论：**IX 与 IX 兼容**——两个事务可以同时持有同一张表的 IX（各自锁不同的行），这正是行锁高并发的基础；而 `ALTER TABLE`（需要表级 X）会被任何 IX 挡住，这就是「有未提交事务时 DDL 会等待」的原因。
+
+#### 插入意向锁（Insert Intention Lock）⭐
+
+INSERT 前要在间隙上设置的一种特殊 Gap Lock：**多个事务在同一间隙插入不同的值，互不阻塞**（只要没有别的 Gap Lock 占着该间隙）。
+
+```sql
+-- id 已有 5, 10。T1 和 T2 并发插入，互不阻塞：
+T1: INSERT INTO t VALUES (7);   -- 在 (5,10) 间隙上加插入意向锁
+T2: INSERT INTO t VALUES (8);   -- 同间隙不同值，不冲突
+```
+
+但如果已有事务对 `(5,10)` 持 Gap Lock（如范围 FOR UPDATE），INSERT 就必须等待——这是「范围更新阻塞插入」的底层机制。
+
+#### AUTO-INC 锁（自增锁）⭐
+
+自增主键的值从哪来？三种模式（`innodb_autoinc_lock_mode`）：
+
+| 模式 | 名称 | 行为 |
+|------|------|------|
+| 0 | traditional | 语句级表锁：INSERT 执行期间持有 AUTO-INC 表锁，并发差 |
+| 1（8.0 前默认） | consecutive | 简单 INSERT 用轻量互斥量（分配即释放）；`INSERT ... SELECT` 等批量语句仍用表锁 |
+| 2（8.0 默认） | interleaved | 全部用轻量互斥量，并发最好；但同一语句内多行可能拿到不连续的自增值 |
+
+注意：模式 2 下自增值**不保证连续**（事务回滚、批量插入交错都会产生空洞），业务不要把自增 ID 当「连续序号」用。
+
+#### 加锁规则速查（RR 隔离级别）
+
+| 场景 | 加锁 |
+|------|------|
+| 唯一索引等值，**命中** | Record Lock |
+| 唯一索引等值，**未命中** | Gap Lock（该值所在间隙） |
+| 非唯一索引等值 | Next-Key Lock + 后一个间隙的 Gap Lock |
+| 范围查询（`>`、`BETWEEN`） | Next-Key Lock 覆盖扫描范围 |
+| 无索引列的 WHERE | **锁全表所有记录+间隙**（相当于锁表，必须避免） |
+| INSERT | 行锁 + 插入意向锁（遇唯一键冲突时加 S 锁） |
+| RC 隔离级别 | 一律无 Gap Lock（只有 Record Lock） |
+
+> 面试追问「为什么没索引的 UPDATE 会锁全表」：行锁依附于索引——InnoDB 通过索引定位记录才能给记录加锁；没有可用索引时只能全表扫描，扫到的每一行都要加锁。
+
+#### MDL（Metadata Lock）⭐⭐
+
+行锁管**数据**，MDL 管**元数据**（表结构）。`SELECT/DML` 会加 **MDL 读锁**，`ALTER/DROP` 需要 **MDL 写锁**——二者互斥。
+
+典型线上事故：一个慢查询（或忘记 COMMIT 的事务）一直持有表的 MDL 读锁 → `ALTER TABLE` 排队 → 后续所有新查询也在等 MDL → **整表不可访问**。排查：`performance_schema.metadata_locks` / `sys.schema_table_lock_waits`；治理：禁长事务、DDL 用 Online/gh-ost、高峰避开。
+
+#### 锁观测（8.0）
+
+```sql
+-- 谁锁了谁（替代信息不全的 INFORMATION_SCHEMA.INNODB_LOCKS）
+SELECT * FROM performance_schema.data_locks;
+SELECT * FROM performance_schema.data_lock_waits;
+```
+
+---
+
 #### 锁示例
 
 ```sql
@@ -1729,21 +1795,33 @@ BEGIN;
 SELECT * FROM users WHERE id = 10 FOR UPDATE;
 ```
 
-**RR隔离级别下的加锁范围**：
-- **行锁**：锁定 `id=10` 的记录
-- **间隙锁**：锁定 `(5, 10)` 的间隙
-- **Next-Key Lock**：锁定 `(5, 10]`
+**RR 隔离级别下，唯一索引等值命中已存在记录**：
+- 只加 **Record Lock**（`locks rec but not gap`），锁定 `id=10` 这一行
+- **不加间隙锁**——这是唯一索引等值命中的特殊优化
 
 **防止的操作**（其他事务）：
 ```sql
 -- ❌ 阻塞：更新 id=10
 UPDATE users SET name = 'xxx' WHERE id = 10;
 
--- ❌ 阻塞：插入 id=6, 7, 8, 9（间隙内）
+-- ✅ 不阻塞：插入 id=7（没有间隙锁）
 INSERT INTO users (id, name) VALUES (7, 'Bob');
+```
 
--- ✅ 不阻塞：插入 id=11（不在间隙内）
-INSERT INTO users (id, name) VALUES (11, 'Charlie');
+**什么时候才会加 Next-Key Lock / Gap Lock？**
+
+| 场景 | 加锁 |
+|------|------|
+| 唯一索引等值，**命中** | 仅 Record Lock |
+| 唯一索引等值，**未命中** | Gap Lock（锁定该值所在的间隙） |
+| 非唯一索引等值 | Next-Key Lock + 后一个间隙的 Gap Lock |
+| 范围查询（`>`、`BETWEEN`） | Next-Key Lock 覆盖整个扫描范围 |
+| RC 隔离级别 | 一律无 Gap Lock（只有 Record Lock） |
+
+```sql
+-- 范围查询才会锁间隙：
+SELECT * FROM users WHERE id BETWEEN 8 AND 12 FOR UPDATE;
+-- 锁定 (5,10] 和 (10,15] 的 Next-Key Lock，插入 id=7/11 都会阻塞
 ```
 
 ---
@@ -1849,8 +1927,8 @@ COMMIT;
 **3. 使用乐观锁**：
 ```sql
 -- 使用版本号
-UPDATE accounts 
-SET balance = balance - 100, version = version + 1 
+UPDATE accounts
+SET balance = balance - 100, version = version + 1
 WHERE id = 1 AND version = @old_version;
 
 -- 检查影响行数
@@ -1963,15 +2041,75 @@ SET sql_log_bin = 1;
 **常见原因**：大事务、从库重放跟不上（历史单线程 SQL 线程）、从库硬件弱、从库上长查询占锁、网络抖动。
 
 **常见手段**：
-- 并行复制：`slave_parallel_workers`（配合 `slave_parallel_type` / `binlog_transaction_dependency_tracking` 等）
+- 并行复制：`replica_parallel_workers`（8.0.26+；旧名 `slave_parallel_workers`，配合 `replica_parallel_type` / `binlog_transaction_dependency_tracking` 等）
 - 拆小事务、避免超长事务
 - 读写分离时用「写后读主 / 等位点」处理一致性（见下节）
 
 **监控**：
 ```sql
-SHOW SLAVE STATUS\G
--- Seconds_Behind_Master: 延迟秒数（粗指标；GTID 拓扑还可看 Retrieved/Executed GTID）
+SHOW REPLICA STATUS\G   -- 8.0.22+；旧写法 SHOW SLAVE STATUS 仍兼容但已弃用
+-- Seconds_Behind_Source: 延迟秒数（粗指标；GTID 拓扑还可看 Retrieved/Executed GTID）
 ```
+
+---
+
+#### GTID 复制⭐⭐
+
+**位点复制的痛点**：`CHANGE MASTER TO MASTER_LOG_FILE='binlog.000123', MASTER_LOG_POS=4567`——位点是**物理位置**，主从切换、级联复制、日志清理后位点全乱，运维极易出错。
+
+**GTID（Global Transaction ID）**：给每个事务分配全局唯一 ID，格式 `server_uuid:事务序号`（如 `3E11FA47-71CA-11E1-9E33-C80AA9429562:23`）。
+
+```
+位点复制：从库记录「我重放到 binlog.000123 的 4567 字节」
+GTID 复制：从库记录「我已执行的事务集合 gtid_executed = uuid:1-100」
+          主库自动比对差集，把从库缺的事务发过去
+```
+
+**优势**：
+- 主从切换时无需算位点：`CHANGE MASTER TO MASTER_AUTO_POSITION=1` 自动对齐
+- 幂等：已执行的 GTID 自动跳过，不会重复执行
+- 拓扑灵活：级联、环形、一主多从随意组合
+
+**两个关键集合**：
+- `gtid_executed`：本实例已执行的事务集合
+- `gtid_purged`：已被清理（binlog 删除）的事务集合——**恢复/搭从库时的坑**：导入的备份若缺 `gtid_purged`，从库会重复执行已清理的事务
+
+**跳事务的正确姿势**（从库某事务报错时）：不能简单 skip，要注入空事务占位：
+```sql
+STOP REPLICA;
+SET GTID_NEXT = 'uuid:105';  -- 报错那个事务的 GTID
+BEGIN; COMMIT;               -- 注入空事务
+SET GTID_NEXT = 'AUTOMATIC';
+START REPLICA;
+```
+
+#### MGR（MySQL Group Replication）⭐⭐
+
+**定位**：MySQL 官方的**组复制**（5.7.17+ 引入，8.0 成熟），基于 Paxos 变体（XCom）实现的多节点共识复制，是 InnoDB Cluster 的核心。
+
+**与主从复制的本质区别**：
+
+| | 异步/半同步主从 | MGR |
+|--|----------------|-----|
+| 一致性 | 最终一致（可能丢数据） | 多数派确认后才提交（类强一致） |
+| 角色 | 主写从读，人工/中间件切换 | 单主模式自动选主 failover |
+| 冲突 | 无检测 | 写冲突检测（认证阶段，后提交者回滚） |
+| 架构 | 一主多从 | 组内对等（单主/多主模式） |
+
+**提交流程（单主模式）**：
+```
+事务本地执行 → COMMIT 时把写集广播给组内成员
+→ 各成员「认证」（certification）：检查写集是否与并发事务冲突
+→ 多数派（N/2+1）接受 → 提交；否则回滚
+```
+
+**实践要点**：
+- 组大小建议 3 或 5（容忍 (N-1)/2 个节点故障）
+- 要求：表必须有主键、InnoDB、GTID 开启、binlog ROW 格式
+- 多主模式理论可行，但写冲突回滚成本高，**生产几乎都用单主模式**
+- 网络分区时少数派自动只读（防脑裂），这是相对「双主+VIP」方案的核心优势
+
+**选型对比**：简单读写分离 → 异步/半同步主从；要求不丢数据 + 自动 failover → MGR/InnoDB Cluster；超大规模分片 → Vitess/中间件分库分表。
 
 ---
 
@@ -2006,9 +2144,11 @@ if (Time.now() - last_write_time < 30s) {
 
 **方案2：等待主从同步**
 ```sql
--- MySQL 5.7.2+
+-- 位点方式（5.7.2+）
 SELECT MASTER_POS_WAIT('binlog_file', binlog_pos, timeout);
--- 等待从库同步到指定位置
+-- GTID 方式（推荐，8.0 常用）
+SELECT WAIT_FOR_EXECUTED_GTID_SET('gtid_set', timeout);
+-- 等待从库同步到指定位置/GTID 集合
 ```
 
 **方案3：会话级别绑定**
@@ -2032,55 +2172,94 @@ if (!data) {
 
 ---
 
+## Online DDL 与变更
+
+线上改表不能「停服 COPY」一把梭。MySQL 8.0 的算法优先级大致是：
+
+| 算法 | 典型操作 | 特点 |
+|------|----------|------|
+| **INSTANT** | 加列（末尾）、部分改默认值、改部分元数据 | 只改数据字典，秒级；有版本限制，不是所有 ALTER 都能 Instant |
+| **INPLACE** | 加/删二级索引、部分改列 | 重建索引或原地改，通常允许 DML，但可能短暂拿 MDL |
+| **COPY** | 大改列类型、改主键等 | 建临时表拷数据，锁表窗口大，尽量避免 |
+
+```sql
+-- 先看优化器会选哪种（8.0）
+ALTER TABLE t ADD COLUMN c INT, ALGORITHM=INSTANT;
+-- 不支持会报错，再评估 INPLACE / 外部工具
+```
+
+**大表变更工具**：
+- **gh-ost**：通过 binlog + 幽灵表切流，对主库压力可控，GitHub 系常用
+- **pt-online-schema-change**：触发器维护增量，成熟但触发器有额外写放大
+- 原则：先评估是否 INSTANT/INPLACE → 不行再用工具；变更窗口盯 MDL 等待与复制延迟
+
+---
+
+## 备份与恢复
+
+| 方式 | 类型 | 用途 |
+|------|------|------|
+| `mysqldump` / `mysqlpump` | 逻辑备份 | 小库、迁移、结构+数据导出；大库慢且一致性窗口难控 |
+| **XtraBackup / mysqlbackup** | 物理热备 | 大库在线备份，拷贝数据文件 + redo；恢复快 |
+| binlog | 增量/PITR | 物理全备 + binlog 重放到指定时间/GTID |
+
+**PITR 闭环**：定期物理全备 → 保留全备之后的全部 binlog → 恢复时「还原全备 + `mysqlbinlog`/`START REPLICA UNTIL` 到故障前一刻」。GTID 环境下务必同步设置 `gtid_purged`，否则从库会重放已清理事务。
+
+生产检查清单：备份可恢复性演练（不只「备份成功」）、binlog 保留天数 vs 全备周期、跨机房拷贝带宽、加密与权限。
+
+---
+
+## MySQL 8.0 特性速览
+
+- **原子 DDL**：DDL 与数据字典事务化，中途崩溃不再留下「半成品表」
+- **降序索引**：`INDEX (a DESC, b ASC)` 真正按降序存储，匹配 `ORDER BY a DESC, b ASC` 可避免 filesort
+- **直方图**：`ANALYZE TABLE t UPDATE HISTOGRAM ON col`，给优化器更准的非索引列分布
+- **EXPLAIN ANALYZE**：真正执行并输出实际耗时/行数，对比估算偏差（比 EXPLAIN 只看估计更有用）
+- **窗口函数 / CTE / 角色权限 / 不可见索引**：复杂分析与灰度加索引（`INVISIBLE` 先观察优化器是否选用再删除）
+- **复制术语**：`SHOW REPLICA STATUS`、`SOURCE_*` 参数名取代 slave/master（旧名仍兼容）
+
+---
+
 ## 性能优化
 
 ### 慢查询优化
 
+#### 治理闭环（推荐流程）
+
+```
+采集慢日志 / performance_schema
+  → 聚合（mysqldumpslow / pt-query-digest）
+  → EXPLAIN / EXPLAIN ANALYZE 定位
+  → 改 SQL / 加索引 / 改模型
+  → 回归对比（耗时、扫描行、锁等待）
+  → 归档样例到知识库，防复发
+```
+
 #### 1. 开启慢查询日志
 
 ```sql
--- 配置
 SET GLOBAL slow_query_log = ON;
-SET GLOBAL long_query_time = 2;  -- 超过2秒记录
-SET GLOBAL slow_query_log_file = '/var/log/mysql/slow.log';
+SET GLOBAL long_query_time = 1;          -- 生产可先 1s，再按 P99 收紧
+SET GLOBAL log_queries_not_using_indexes = ON;  -- 慎用，量大时采样
 ```
 
----
+#### 2. 分析工具
 
-#### 2. 分析慢查询
-
-**使用 `mysqldumpslow`**：
 ```bash
-# 按查询时间排序，显示前10条
 mysqldumpslow -s t -t 10 /var/log/mysql/slow.log
-
-# 按查询次数排序
-mysqldumpslow -s c -t 10 /var/log/mysql/slow.log
+# 更推荐（按指纹聚合、看 95/99 分位）：
+pt-query-digest /var/log/mysql/slow.log
 ```
 
----
+也可查 `performance_schema.events_statements_summary_by_digest` 看线上真实耗时 Top SQL（不一定先开慢日志）。
 
 #### 3. 优化步骤
 
-**Step 1: 查看执行计划**
 ```sql
 EXPLAIN SELECT * FROM orders WHERE user_id = 123 AND status = 1;
-```
-
-**Step 2: 检查索引**
-```sql
-SHOW INDEX FROM orders;
-```
-
-**Step 3: 创建合适的索引**
-```sql
+EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id = 123 AND status = 1;  -- 8.0.18+
+-- 关注：type、key、rows vs 实际 rows、Extra(Using filesort/temporary)
 CREATE INDEX idx_user_status ON orders(user_id, status);
-```
-
-**Step 4: 验证效果**
-```sql
-EXPLAIN SELECT * FROM orders WHERE user_id = 123 AND status = 1;
--- 检查 type: ref, key: idx_user_status
 ```
 
 ---
@@ -2417,8 +2596,8 @@ WHERE account_id = @account_id;
 
 -- 4. 记录流水
 INSERT INTO transactions (
-  account_id, txn_type, amount, 
-  balance_before, balance_after, 
+  account_id, txn_type, amount,
+  balance_before, balance_after,
   request_id, status
 ) VALUES (
   @account_id, 2, @amount,
@@ -2470,7 +2649,7 @@ INSERT INTO transactions (...) VALUES (...);
 ```sql
 -- 使用 request_id 保证幂等
 INSERT INTO transactions (
-  account_id, txn_type, amount, 
+  account_id, txn_type, amount,
   request_id, status
 ) VALUES (
   @account_id, 2, @amount,
@@ -2516,7 +2695,7 @@ LIMIT 100;
 SELECT COUNT(*) + 1 AS rank
 FROM leaderboard
 WHERE score > (SELECT score FROM leaderboard WHERE user_id = @user_id)
-   OR (score = (SELECT score FROM leaderboard WHERE user_id = @user_id) 
+   OR (score = (SELECT score FROM leaderboard WHERE user_id = @user_id)
        AND user_id < @user_id);
 ```
 
@@ -2575,129 +2754,132 @@ MySQL是金融面试的重中之重，重点掌握：
 
 ## 面试题自查
 
-### 初级高频速刷
+> 统一编号 **Q1–Qn**。每题格式：要点 → 易错点 → 可选追问。细节回正文章节。
 
-**1. `CHAR` 和 `VARCHAR` 的区别是什么？怎么选？**
+#### Q1: `CHAR` / `VARCHAR`、`COUNT(*)` / `COUNT(列)`、主键/唯一/普通索引怎么区分？
 
-`CHAR` 是定长字段，读取简单，适合长度固定的数据；`VARCHAR` 是变长字段，更节省空间，适合大多数业务文本。面试里更重要的是说出选择原则，而不是机械背“一个快一个慢”。
+`CHAR` 定长、`VARCHAR` 变长按业务选；`COUNT(*)`/`COUNT(1)` 计行，`COUNT(列)` 忽略 NULL；主键决定 InnoDB 聚簇组织且非空唯一，唯一索引可多条、普通索引只加速。
+**追问**：为何建议短而稳定的主键？→ 二级索引叶子存主键，主键过长会放大所有二级索引体积。
 
-**2. `COUNT(*)`、`COUNT(1)`、`COUNT(列名)` 有什么区别？**
+#### Q2: `WHERE` vs `HAVING`？内/左/右连接返回什么？
 
-`COUNT(*)` 和 `COUNT(1)` 统计总行数，通常执行上没有本质区别；`COUNT(列名)` 会忽略该列为 `NULL` 的记录。很多人只会说 `COUNT(1)` 更快，这在现在的 MySQL 面试里已经不够严谨。
+`WHERE` 聚合前过滤，`HAVING` 聚合后过滤；内连接两边匹配，左连接保左表、右补 NULL。
+**追问**：能下推到 `WHERE` 的条件为何不要写 `HAVING`？→ 少聚合无效行。
 
-**3. 主键索引、唯一索引、普通索引的区别是什么？**
+#### Q3: 长事务、大事务、`SELECT *` 为什么都要警惕？
 
-主键索引唯一且非空，在 InnoDB 中决定数据物理组织方式；唯一索引保证唯一但允许一张表存在多个；普通索引只做查询加速。面试官常继续追问：为什么 InnoDB 建议用短而稳定的主键。
+长事务拖住 Read View → purge 停、undo 膨胀、锁持有久、复制延迟；大事务放大锁/回滚/binlog/从库回放；`SELECT *` 增 IO/网络并易失去覆盖索引。
+**追问**：如何发现长事务？→ `information_schema.innodb_trx` / `performance_schema`。
 
-**4. `WHERE` 和 `HAVING` 的区别是什么？**
+#### Q4: 为什么 InnoDB 选 B+Tree 而不是 B-Tree、Hash、红黑树？
 
-`WHERE` 在聚合前过滤原始行，`HAVING` 在 `GROUP BY` 之后过滤聚合结果。能放在 `WHERE` 的条件尽量不要放到 `HAVING`，因为那会让更多数据参与聚合，增加开销。
+叶子存数据+链表适合范围与顺序 IO；非叶只存 key 树更矮；Hash 无范围；红黑树太高。
+**追问**：三层大约能存多少行？估算假设是什么？→ 见「B+Tree结构」。
 
-**5. 左连接、右连接、内连接分别返回什么结果？**
+#### Q5: InnoDB vs MyISAM 核心区别？现代为何几乎都用 InnoDB？
 
-内连接只返回两边都匹配上的记录；左连接保留左表全部记录，没有匹配时右表字段补 `NULL`；右连接反之。实际项目里右连接用得少，很多团队会统一改写成左连接，降低理解成本。
+事务/行锁/MVCC/崩溃恢复/聚簇索引 vs 表锁无事务。现代需要并发与安全。
+**追问**：还有什么场景会碰到 MyISAM？→ 极少，历史系统或临时特殊表。
 
-### 中级高频进阶
+#### Q6: redo / binlog / undo 各自作用？两阶段提交解决什么？「双 1」是什么？
 
-**6. 什么是长事务？为什么线上要尽量避免长事务？**
+redo 持久化与崩溃恢复；binlog 复制与 PITR；undo 回滚与 MVCC。2PC 保证 redo 与 binlog 一致。双 1=`innodb_flush_log_at_trx_commit=1` + `sync_binlog=1`。
+**追问**：只改其中一个会怎样？→ 仍可能丢提交或主从缺口。
 
-长事务是指持有事务上下文和快照时间过久的事务。它会阻碍 MVCC 旧版本清理、拖慢 purge、加大锁持有时间，还可能让主从延迟持续恶化。很多数据库问题表面上是“慢”，根因其实是长事务没结束。
+#### Q7: Buffer Pool LRU 为何不是标准 LRU？Change Buffer 与 redo 区别？doublewrite 解决什么？
 
-**7. 为什么线上不建议做大事务？**
+midpoint insertion：新页进 old 区，防全表扫描污染热数据。Change Buffer 缓存**非唯一二级索引**的页修改以省随机读；redo 记物理页变更保崩溃恢复。doublewrite 防部分写页断裂。
+**追问**：唯一二级索引为什么通常不进 Change Buffer？→ 要立即判断唯一性冲突。
 
-大事务意味着一次提交涉及大量行或大量语句，会放大锁冲突、回滚成本、binlog 体积和从库回放压力。尤其在主从架构里，一个大事务就可能让从库 SQL 线程卡很久，直接影响读写一致性。
+#### Q8: 聚簇索引是什么？为何必须有主键？UUID 主键有何问题？
 
-**8. 为什么很多团队不建议直接写 `select *`？**
+数据按主键聚簇；无显式主键会用隐藏 ROW_ID（全局分配瓶颈）。UUID 无序 → 页分裂与碎片。
+**追问**：用 UUID v7 / 雪花 ID 呢？→ 时间有序可缓解，仍比 BIGINT 自增占空间。
 
-因为它会拉取不必要列、增加 IO 和网络开销，也更容易让查询失去覆盖索引机会。面试里真正成熟的回答不是“代码规范要求”，而是能说出它和性能、稳定性、接口耦合之间的关系。
+#### Q9: 覆盖索引与回表？如何优化？
 
-> 以下问题可作为学习本文后的自查清单，以资深面试官视角设计。每题附有简要回答，详细原理请回到文章对应章节深入学习。
+索引含所需列则不回表（`Using index`）。优化：联合覆盖、延迟关联、少 `SELECT *`。
+**追问**：唯一索引等值是否一定不回表？→ 查非索引列仍要回表。
 
-### 深入问答
+#### Q10: 最左前缀与「范围后列失效」？
 
-#### Q1: 为什么 MySQL InnoDB 选择 B+Tree 而不是 B-Tree、Hash 索引或红黑树？
+`(a,b,c)` 必须从左用起；范围条件后的列顺序不确定，一般用不上索引排序/过滤。列顺序看**查询形态**，不是「区分度高一定放前」。
+**追问**：8.0 Index Skip Scan 是什么？→ 缺最左列时可跳跃，通常仍不如完整前缀。
 
-B+Tree 相比 B-Tree 的优势：① 所有数据都在叶子节点，非叶子节点只存 key+指针，单个节点能容纳更多索引项，树更矮，磁盘 I/O 更少（3层可存约2000万记录）；② 叶子节点形成双向链表，范围查询只需沿链表扫描（顺序 I/O），而 B-Tree 需要中序遍历（随机 I/O）；③ 查询路径长度固定（都到叶子节点），性能稳定可预测。Hash 索引不支持范围查询和排序。红黑树是二叉树，高度远大于 B+Tree，磁盘 I/O 次数多。
+#### Q11: MVCC / Read View 规则？RC 与 RR 区别？
 
-#### Q2: InnoDB 和 MyISAM 的核心区别是什么？为什么现代项目几乎都用 InnoDB？
+隐藏列+undo 版本链；可见性看 m_ids/min/max。RC 每句新 Read View；RR **第一次一致性读**创建并复用（≠ BEGIN 瞬间）。
+**追问**：BEGIN 后过很久才第一次 SELECT，能看到中间已提交的修改吗？→ 能。
 
-核心区别：① InnoDB 支持事务（ACID），MyISAM 不支持；② InnoDB 使用行级锁，MyISAM 使用表级锁；③ InnoDB 支持外键和 MVCC，MyISAM 不支持；④ InnoDB 有 redo log 保证崩溃恢复，MyISAM 崩溃后需要手动修复；⑤ InnoDB 使用聚簇索引（数据和主键索引存储在一起），MyISAM 使用非聚簇索引（数据和索引分开存储）。现代项目需要事务支持、高并发能力和数据安全性，这些都是 InnoDB 的强项。
+#### Q12: RR 如何解决幻读？MVCC 能完全解决吗？
 
-#### Q3: redo log、binlog、undo log 各自的作用是什么？两阶段提交是怎么回事？
+快照读靠 MVCC 过滤新插入；当前读靠 Next-Key。先快照再当前读（UPDATE 命中新行）仍可能幻读。
+**追问**：RC 为何几乎无间隙锁？→ 不承诺可重复读，间隙锁收益低、易死锁。
 
-redo log（InnoDB 层）：保证持久性，WAL 机制，先写日志后刷脏页，崩溃恢复时重放已提交的修改。binlog（Server 层）：用于主从复制和数据恢复（PITR），记录所有 DDL/DML 操作。undo log（InnoDB 层）：保证原子性（回滚）和 MVCC 版本链。两阶段提交：事务提交时 ① redo log 写入 prepare 状态 → ② binlog 写入磁盘 → ③ redo log 标记为 commit。目的是保证 redo log 和 binlog 的一致性，防止崩溃后主从数据不一致。
+#### Q13: Next-Key Lock 组成与加锁范围？
 
-#### Q4: 什么是聚簇索引？为什么 InnoDB 表必须有主键？使用 UUID 作为主键有什么问题？
+Record + Gap，左开右闭。**唯一索引等值命中只加 Record Lock**；未命中加 Gap；非唯一/范围加 Next-Key。
+**追问**：`FOR UPDATE NOWAIT` / `SKIP LOCKED` 何时用？→ 不等待失败 / 跳过已锁行抢任务。
 
-聚簇索引指数据按主键顺序物理存储在 B+Tree 的叶子节点中，InnoDB 的数据文件本身就是按主键组织的 B+Tree。因此必须有主键来组织数据（没有显式主键时 InnoDB 自动创建隐藏的 ROW_ID，但有全局锁瓶颈和溢出覆盖风险）。UUID 作为主键的问题：无序插入导致频繁页分裂，索引碎片化严重，占用空间大（36字节 vs BIGINT 8字节），性能远差于自增 ID。
+#### Q14: 意向锁、插入意向锁、MDL 各解决什么？
 
-#### Q5: 什么是覆盖索引？什么是回表？如何通过覆盖索引优化查询？
+IS/IX 让表锁快速判断是否有行锁；插入意向锁让同间隙不同值 INSERT 互不等待；MDL 保护元数据，慢查询可堵住 DDL 进而堵住全表。
+**追问**：如何看锁等待？→ `performance_schema.data_locks` / `data_lock_waits`。
 
-覆盖索引指查询所需的列全部包含在索引中，不需要再回到主键索引查完整行（EXPLAIN 中 Extra 显示 `Using index`）。回表指通过二级索引找到主键值后，再去主键索引查完整行数据，涉及两次 B+Tree 查找和两次随机 I/O。优化方式：① 创建包含查询列的联合索引；② 使用延迟关联：先用覆盖索引子查询获取 id 列表，再与原表 JOIN 回表（减少回表次数）。
+#### Q15: ICP、索引失效常见场景、EXPLAIN type 好坏顺序？
 
-#### Q6: 联合索引的最左前缀原则是什么？为什么范围查询后面的列无法使用索引？
+ICP 在引擎层用索引过滤减回表。失效：函数、隐式转换、`%前模糊`、OR 部分无索引等。type：const > eq_ref > ref > range > index > ALL。
+**追问**：`EXPLAIN ANALYZE` 比 EXPLAIN 多什么？→ 真实执行耗时与行数。
 
-联合索引 `(a, b, c)` 的 B+Tree 按 a→b→c 的顺序排列：先按 a 排序，a 相同时按 b 排序，b 相同时按 c 排序。因此查询必须从最左列 a 开始才能利用索引的有序性。当 a 是等值查询时，同一 a 值内 b 有序，可以继续用索引；但当 a 或 b 是范围查询时（如 `b > 5`），匹配到的范围内 c 的顺序不确定，无法利用索引对 c 进行过滤。MySQL 8.0+ 的 Index Skip Scan 可以在缺少最左列时跳跃扫描，但效率低于完整匹配。
+#### Q16: 死锁如何排查与预防？
 
-#### Q7: MVCC 是如何实现的？Read View 的可见性判断规则是什么？RC 和 RR 隔离级别下 Read View 有什么区别？
+`SHOW ENGINE INNODB STATUS` 看 LATEST DETECTED DEADLOCK；固定加锁顺序、缩短事务、RC、乐观锁。
+**追问**：InnoDB 死锁时回滚谁？→ 代价较小的一方。
 
-MVCC 通过每行记录的隐藏列（DB_TRX_ID、DB_ROLL_PTR）和 undo log 版本链实现。读取时创建 Read View，包含当前活跃事务 ID 列表（m_ids）、最小活跃事务 ID（min_trx_id）、下一个分配的事务 ID（max_trx_id）。可见性规则：trx_id == 当前事务 → 可见；trx_id < min_trx_id → 已提交可见；trx_id ≥ max_trx_id → 未来事务不可见；trx_id 在 m_ids 中 → 未提交不可见；否则可见。RC 每次 SELECT 创建新 Read View（能看到其他事务已提交的最新数据），RR 整个事务共用同一个 Read View（保证可重复读）。
+#### Q17: 主从复制原理？GTID 相对位点复制的优势？读写不一致怎么解？
 
-#### Q8: InnoDB 在 RR 隔离级别下是如何解决幻读问题的？MVCC 能完全解决幻读吗？
+binlog → relay → 重放。GTID 全局事务号，自动定位、易切换。方案：读主、`WAIT_FOR_EXECUTED_GTID_SET`、会话粘主、缓存。
+**追问**：从库报错能否 `sql_replica_skip_counter`？→ GTID 下应注入空事务占位。
 
-RR 下通过 MVCC + Next-Key Lock 配合解决幻读。快照读（普通 SELECT）通过 MVCC 的 Read View 过滤掉新插入的行（新行的 trx_id 在活跃列表中或大于 max_trx_id），但 MVCC 不能完全防止幻读（如果新插入的事务在 Read View 创建前已提交，则对当前事务可见）。当前读（SELECT FOR UPDATE / UPDATE / DELETE）通过 Next-Key Lock 锁定索引记录及间隙，阻止其他事务在锁定范围内插入新行，从根本上防止幻读。
+#### Q18: Online DDL 算法怎么选？大表变更用什么工具？
 
-#### Q9: Next-Key Lock 是什么？它由哪些锁组成？请举例说明加锁范围。
+优先 INSTANT → INPLACE → COPY；大表用 gh-ost / pt-osc，并盯 MDL 与复制延迟。
+**追问**：加一列什么时候能 Instant？→ 末尾加列等受限场景，先 `ALGORITHM=INSTANT` 试探。
 
-Next-Key Lock = 行锁（Record Lock）+ 间隙锁（Gap Lock），锁定一条记录本身以及该记录之前的间隙，是一个左开右闭的区间。例如表中有 id=1,5,10,15，执行 `SELECT * FROM t WHERE id = 10 FOR UPDATE` 时，在 RR 隔离级别下加锁范围是 `(5, 10]` 的 Next-Key Lock。其他事务无法更新 id=10 的记录，也无法在 (5,10) 的间隙中插入新记录，但可以在 id>10 的位置插入。间隙锁仅在 RR 隔离级别下生效，RC 隔离级别不使用间隙锁。
+#### Q19: 备份与 PITR 怎么做？
 
-#### Q10: 索引下推（ICP）是什么？它在什么场景下能提升性能？
+物理热备（XtraBackup）+ binlog 重放到点；逻辑备份适合小库。演练可恢复性；注意 `gtid_purged`。
+**追问**：只做 mysqldump 不做 binlog 行不行？→ 只能回到备份点，不能 PITR。
 
-Index Condition Pushdown（MySQL 5.6+）将部分 WHERE 条件下推到存储引擎层，在索引遍历时直接过滤不满足条件的记录，减少回表次数。典型场景：联合索引 `(name, age)` 查询 `WHERE name LIKE 'A%' AND age = 25`，无 ICP 时索引只能用 name 条件扫描出所有 `A%` 的记录再回表，然后 Server 层过滤 age；有 ICP 时在索引中就检查 age=25，只对满足条件的记录回表。EXPLAIN 中 Extra 显示 `Using index condition`。
+#### Q20: 深分页为何慢？怎么优化？
 
-#### Q11: 有哪些常见的索引失效场景？如何避免？
+大 OFFSET 白扫。Keyset 分页、延迟关联、限翻页深度。
+**追问**：延迟关联收益主要在哪？→ 减少深翻页的回表次数。
 
-常见场景：① 对索引列使用函数或表达式（如 `YEAR(created_at) = 2024`，改用范围查询）；② 隐式类型转换（VARCHAR 列传数字，MySQL 对索引列做 CAST）；③ 前导模糊查询（`LIKE '%xxx'`）；④ OR 条件中部分列无索引；⑤ 不等于条件（`!=` / `NOT IN`）可能导致优化器选择全表扫描；⑥ 联合索引不满足最左前缀。避免方法：保持查询条件与索引列类型一致、避免对索引列做运算、用 UNION 替代 OR、合理设计联合索引顺序。
+#### Q21: 分库分表策略？范围 vs 哈希？
 
-#### Q12: EXPLAIN 执行计划中的 type 字段有哪些值？从好到差的排列是什么？
+垂直按业务/字段；水平范围易扩容易热点，哈希均匀难扩容。
+**追问**：跨片查询与分布式事务怎么收敛？→ 尽量避免，细节见分库分表章与系统设计篇。
 
-从好到差：system（表只一行）> const（主键/唯一索引等值）> eq_ref（JOIN时唯一索引匹配）> ref（非唯一索引等值）> range（范围扫描）> index（全索引扫描）> ALL（全表扫描）。生产环境至少要达到 range 级别，出现 ALL 必须优化。另外关注 Extra 字段：`Using index` 好（覆盖索引），`Using filesort` 和 `Using temporary` 差（需额外排序或临时表）。
+#### Q22: 乐观锁 vs 悲观锁？
 
-#### Q13: 死锁是如何产生的？如何排查和预防？
+悲观：`FOR UPDATE` 堵当前读/写；快照读不堵。乐观：version 条件更新。高冲突金融偏悲观，低冲突偏乐观。
+**追问**：普通 SELECT 会被 FOR UPDATE 堵住吗？→ RR/RC 下快照读一般不会。
 
-死锁产生条件：两个或多个事务互相等待对方持有的锁。典型场景：T1 锁 id=1 等 id=2，T2 锁 id=2 等 id=1。排查方法：`SHOW ENGINE INNODB STATUS\G` 查看 LATEST DETECTED DEADLOCK 部分，分析两个事务各自持有和等待的锁。预防措施：① 固定加锁顺序（所有事务按相同顺序访问资源）；② 缩短事务持有锁的时间（先计算后开事务）；③ 降低隔离级别到 RC（减少间隙锁）；④ 使用乐观锁（版本号机制）替代悲观锁。InnoDB 的死锁检测会自动回滚代价小的事务。
+#### Q23: binlog 格式与生产推荐？
 
-#### Q14: 主从复制的原理是什么？有哪些方式解决主从延迟导致的读写不一致？
+STATEMENT / ROW / MIXED；5.7.7+ 服务器默认 ROW。生产推荐 ROW。
+**追问**：ROW 体积大如何缓解？→ 磁盘与压缩、避免无谓更新大列。
 
-原理：① 主库将变更写入 binlog；② 从库 IO Thread 拉取 binlog 到 Relay Log；③ 从库 SQL Thread 重放 Relay Log。延迟原因：主库写入过快、从库硬件差、大事务、锁冲突。解决读写不一致的方案：① 强制读主库（写入后短时间内读主库，适合金融场景）；② 等待同步完成（`MASTER_POS_WAIT`）；③ 会话级别绑定主库；④ 缓存+异步写（写入主库同时写缓存，读时先查缓存，适合游戏场景）。
+#### Q24: 金融扣款流程要考虑什么？
 
-#### Q15: 深分页（如 LIMIT 1000000, 10）为什么慢？如何优化？
+事务内扣款+流水、幂等键、`balance >=`、加锁顺序、对账字段。
+**追问**：如何防重复扣款与超扣？→ 唯一 request_id + SQL 条件更新。
 
-慢的原因：MySQL 需要扫描 offset+limit 行（1000010行），丢弃前 offset 行，只返回 limit 行，大量无效扫描和回表。优化方案：① 游标分页（Keyset Pagination）：记住上一页最后一条记录的 ID，用 `WHERE id > @last_id ORDER BY id LIMIT 10`，利用主键索引直接定位，性能恒定；② 延迟关联：子查询用覆盖索引先查出 ID（`SELECT id FROM orders ORDER BY id LIMIT 1000000, 10`），再与原表 JOIN 回表，减少回表开销；③ 业务层面限制最大翻页深度。
+#### Q25: 一条 SQL 的执行流程？Prepared Statement 在哪一环？
 
-#### Q16: 分库分表有哪些策略？水平拆分的范围分片和哈希分片各有什么优缺点？
-
-分库分表分为垂直拆分（按业务拆库/按冷热字段拆表）和水平拆分（按行拆分到多个表/库）。范围分片（如 id 1-100万到表1，100万-200万到表2）：优点是扩容方便（新增范围即可）、范围查询高效；缺点是数据分布可能不均（新数据集中在最新分片，热点问题）。哈希分片（如 id % 4）：优点是数据分布均匀；缺点是扩容困难（改变模数需要数据迁移）、范围查询需要扫描所有分片。实际中常用一致性哈希来缓解扩容问题。
-
-#### Q17: 乐观锁和悲观锁在 MySQL 中如何实现？各自适用什么场景？
-
-悲观锁：通过 `SELECT ... FOR UPDATE` 在事务中对行加排他锁，其他事务读写都被阻塞。适用于写冲突概率高的场景（如金融扣款），确保数据一致性，但并发性能较差。乐观锁：通过版本号（version）或时间戳实现，UPDATE 时 `WHERE version = @old_version`，如果 ROW_COUNT()=0 说明被其他事务修改过，需要重试。适用于读多写少、冲突概率低的场景，不加锁，并发性能好。实际中金融核心扣款用悲观锁保证强一致，普通业务更新用乐观锁提高吞吐。
-
-#### Q18: binlog 有几种格式？生产环境推荐用哪种？为什么？
-
-三种格式：① STATEMENT 记录原始 SQL 语句，体积小但存在不确定性（如 `NOW()`、`UUID()` 在主从可能不一致）；② ROW 记录每行变更的前后镜像，体积大但精确无歧义；③ MIXED 默认用 STATEMENT，遇到不确定函数自动切 ROW。生产环境推荐 ROW 格式：主从数据完全一致，不受函数/触发器/存储过程影响，方便用 binlog 做数据恢复和审计。缺点是日志量大，但磁盘成本远低于数据不一致的风险。
-
-#### Q19: B+树的分裂和合并是什么？为什么自增主键能减少页分裂？
-
-分裂：当一个节点的 key 数量超过上限时，将节点拆分为两个，中间 key 提升到父节点；如果父节点也满了则递归分裂，极端情况下根节点分裂导致树增高。合并：当删除 key 后节点的 key 数量低于下限时，先尝试从兄弟节点借 key（重分配），借不到则与兄弟合并。自增主键保证新记录总是追加在 B+Tree 最右侧的叶子节点，顺序插入不会触发中间节点的分裂；而 UUID 等无序主键会随机插入到已满的中间节点，频繁触发分裂，产生大量碎片。
-
-#### Q20: 如何设计一个金融交易系统的扣款流程？需要考虑哪些问题？
-
-核心考虑：① 原子性：在事务中完成余额查询、检查、扣减、记录流水，使用 `FOR UPDATE` 悲观锁或 version 乐观锁保证一致；② 幂等性：通过 request_id 唯一键保证同一请求不重复扣款（`INSERT ... ON DUPLICATE KEY`）；③ 余额校验：SQL 层面 `WHERE balance >= @amount` 双重检查（应用层+SQL层）防止并发超扣；④ 流水记录：记录交易前后余额（balance_before/balance_after）用于对账；⑤ 防止死锁：多账户操作时按 account_id 升序加锁。
-
-#### Q21: 一条 SQL 在 MySQL 中的执行流程是什么？Prepared Statement 属于哪个环节？
-
-普通 SQL 的执行流程大致是：连接器建立连接并维护会话状态 → 解析器做词法/语法分析 → 预处理器检查表和列、解析名字、展开 `*` → 优化器选择索引、JOIN 顺序和排序方式 → 执行器按计划调用 InnoDB → InnoDB 通过 B+Tree、Buffer Pool、MVCC/锁返回数据。Prepared Statement 属于「解析/预处理」相关的执行机制：先用 `COM_STMT_PREPARE` 把带 `?` 占位符的 SQL 模板发给服务端解析和检查，之后用 `COM_STMT_EXECUTE` 只传参数反复执行。它能防 SQL 注入，是因为 SQL 结构在 PREPARE 阶段已经确定，后续参数只能作为值绑定，不能改变语法结构。是否更快要分开看：预处理能省重复解析和二进制协议传输成本，但不等于固定缓存执行计划，性能优化仍要看索引、统计信息和 `EXPLAIN`。
+连接→解析→预处理→优化→执行→引擎。PS 在解析/预处理：结构固定防注入，不自动等于计划缓存。
+**追问**：优化器选错索引怎么办？→ 统计信息、直方图、`FORCE INDEX` 慎用、改写 SQL。
 
 ### 开放式设计题
 
@@ -2705,7 +2887,7 @@ Index Condition Pushdown（MySQL 5.6+）将部分 WHERE 条件下推到存储引
 
 **参考思路**：
 - 分库分表策略：按用户ID哈希分库（16库×64表）、按时间范围分区（归档查询）
-- 写入优化：批量Insert、异步写入（MQ削峰）、关闭双1设置（innodb_flush_log_at_trx_commit=2用于非资损场景）
+- 写入优化：批量Insert、异步写入（MQ削峰）、非资损场景可放宽持久化：innodb_flush_log_at_trx_commit=2 且 sync_binlog=1000（"双1"指这两个参数都为1，放宽需成对评估）
 - 查询兼容：订单号内嵌分片信息（Snowflake编码用户ID后缀）、全局唯一索引方案
 - 数据归档：冷热分离（3个月以上迁移到TiDB/ClickHouse）、在线DDL工具（gh-ost）
 - 关键取舍：强一致性（同步复制+半同步）vs 性能，跨分片查询的代价
@@ -2713,8 +2895,8 @@ Index Condition Pushdown（MySQL 5.6+）将部分 WHERE 条件下推到存储引
 **D2：如果线上MySQL主从延迟持续增大到30秒以上，你的排查和解决思路是什么？**
 
 **参考思路**：
-- 确认延迟：show slave status → Seconds_Behind_Master、GTID差距
+- 确认延迟：SHOW REPLICA STATUS → Seconds_Behind_Source、GTID 差距（Retrieved vs Executed）
 - IO线程瓶颈：网络带宽/Binlog传输速度 → 并行复制配置
-- SQL线程瓶颈：大事务回放慢 → binlog_group_commit、slave_parallel_workers调大、LOGICAL_CLOCK模式
+- SQL线程瓶颈：大事务回放慢 → binlog_group_commit、replica_parallel_workers 调大、LOGICAL_CLOCK 模式
 - 业务层应对：写后读走主库（设置Hint或中间件路由）、降级方案
 - 根因治理：拆分大事务、避免DDL长时间锁表、升级为MGR/组复制

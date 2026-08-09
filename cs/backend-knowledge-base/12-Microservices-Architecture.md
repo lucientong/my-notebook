@@ -2,331 +2,217 @@
 
 Language: English | [中文](../后端知识库/12-微服务架构.md)
 
+> **Scope**: how to split, connect, stay alive, stay consistent, and stay observable.
+> Rate-limit / circuit-breaker *algorithms* → [09 System Design](./09-System-Design-and-Architecture.md).
+> Istio / Envoy detail → [11 Cloud Native](./11-Cloud-Native-and-Containers.md). This doc keeps selection and microservice usage.
+
 ---
 
 ## Table of Contents
 
-1. [Microservice Basics](#1-microservice-basics)
-2. [Service Discovery](#2-service-discovery)
-3. [API Gateway](#3-api-gateway)
-4. [Circuit Breaking and Degradation](#4-circuit-breaking-and-degradation)
-5. [Distributed Tracing](#5-distributed-tracing)
-6. [Configuration Center](#6-configuration-center)
+1. [Split and Migration](#1-split-and-migration)
+2. [Service Communication](#2-service-communication)
+3. [Discovery](#3-discovery)
+4. [Configuration](#4-configuration)
+5. [Gateway, BFF, Mesh Boundaries](#5-gateway-bff-mesh-boundaries)
+6. [Resilience Quartet](#6-resilience-quartet)
 7. [Distributed Transactions](#7-distributed-transactions)
-8. [Service Communication](#8-service-communication)
-9. [Rate Limiting](#9-rate-limiting)
-10. [Microservice Testing](#10-microservice-testing)
-11. [Service Governance Practice](#11-service-governance-practice)
-12. [Interview Self-Check](#12-interview-self-check)
+8. [Tracing and Observability](#8-tracing-and-observability)
+9. [Release Governance and Mesh](#9-release-governance-and-mesh)
+10. [Testing](#10-testing)
+11. [Interview Self-Check](#11-interview-self-check)
 
 ---
 
-## 1. Microservice Basics
+## 1. Split and Migration
 
-### 1.1 Monolith vs Microservices
+Monolith = one building, shared utilities. Microservices = separate meters per building: independent scale and failure domains, but you must build roads (network), reconciliation (consistency), and a property office (platform).
 
-Monolith:
+**Topology (top-down):** external traffic → API gateway → services (each with its own DB). Do not draw services above the gateway.
 
-- simple deployment.
-- local calls.
-- easier transactions.
-- can become hard to change at scale.
+Split by **business capability**, not by technical layer (`UserController` service is an anti-pattern). Hard criteria: single responsibility, high cohesion, low coupling (no cross-service joins into another team's tables).
 
-Microservices:
+### 1.1 DDD, Data Ownership, Migration
 
-- independent ownership and deployment.
-- independent scaling.
-- clearer bounded contexts.
-- distributed failure and consistency complexity.
-
-Do not use microservices just because the system is large. Use them when organization, deployment, and ownership boundaries justify the cost.
-
-### 1.2 Decomposition Principles
-
-Good boundaries:
-
-- business capability.
-- data ownership.
-- team ownership.
-- change frequency.
-- failure isolation.
-
-Avoid splitting by technical layers such as controller/service/DAO.
+- **Bounded context**: same term means the same thing inside one boundary.
+- **Data ownership**: one write owner per aggregate; others read via API/events/replicas.
+- **Strangler**: put a façade in front, peel hot paths first, cut over gradually.
+- **Anti-corruption layer**: translate legacy models at the boundary.
+- **Order**: platform gates → extract service → **then** split the database → reconcile before weakening sync transactions.
 
 ---
 
-## 2. Service Discovery
+## 2. Service Communication
 
-Service discovery maps logical service names to available instances.
+| Style | When |
+|-------|------|
+| Sync RPC (HTTP/gRPC) | Need immediate answer; keep hop budget |
+| Async messaging | Decouple, absorb spikes, eventual consistency |
 
-Models:
+**REST ≠ HTTP/1.1.** REST is an architectural style; it often rides HTTP/1.1 or HTTP/2. gRPC defaults to HTTP/2 + Protobuf. Avoid unverifiable claims like “gRPC is always 10× faster.”
 
-- client-side discovery.
-- server-side discovery.
-- DNS-based discovery.
-- service mesh discovery.
-
-Consul, etcd, and Nacos are common registry/configuration systems.
-
-Important concerns:
-
-- health checking.
-- TTL/lease.
-- stale instances.
-- multi-zone awareness.
-- graceful shutdown.
+**Distributed IDs**: UUID/ULID (no center), segment allocators, Snowflake-style. Trade trend-ordering vs central allocator dependency.
 
 ---
 
-## 3. API Gateway
+## 3. Discovery
 
-Gateway responsibilities:
+Problem: instances come and go; clients need healthy targets.
 
-- routing.
-- authentication.
-- rate limiting.
-- protocol translation.
-- request signing.
-- observability.
-- canary routing.
+| Approach | Notes |
+|----------|-------|
+| K8s Service DNS + readiness | Enough for many in-cluster east-west cases |
+| Registry (Nacos/Eureka/Consul…) | Heterogeneous runtimes, rich metadata routing |
+| Mesh control plane | Platform-owned discovery + traffic policy |
 
-Gateway should not contain complex business logic, otherwise it becomes a distributed monolith.
+Label CAP carefully: e.g. Consul registration on Raft is closer to **CP** for the catalog; do not paste a one-cell “AP/CP” slogan without saying *which subsystem*.
 
----
-
-## 4. Circuit Breaking and Degradation
-
-Circuit breaker prevents cascading failure by failing fast when downstream is unhealthy.
-
-Degradation keeps critical user flows alive by disabling non-critical functions.
-
-Examples:
-
-- return cached profile.
-- hide recommendations.
-- use fallback config.
-- skip analytics write.
+**Graceful drain**: deregister / readiness=false → finish in-flight → stop process. Startup is the reverse plus warm-up.
 
 ---
 
-## 5. Distributed Tracing
+## 4. Configuration
 
-Distributed tracing connects requests across services.
-
-Core concepts:
-
-- trace.
-- span.
-- trace ID.
-- parent-child span relationship.
-- baggage/context propagation.
-
-OpenTelemetry provides a standard model for traces, metrics, and logs.
-
-Tracing helps answer:
-
-- where latency is spent.
-- which dependency failed.
-- whether errors correlate with deployment or traffic.
+Central config beats hard-coded files for multi-instance consistency, audit, and rollback. Hot refresh must rebuild half-initialized resources (pools, clients), not only swap a string in memory.
 
 ---
 
-## 6. Configuration Center
+## 5. Gateway, BFF, Mesh Boundaries
 
-Configuration center manages dynamic configuration.
+| Layer | Job |
+|-------|-----|
+| **Gateway** | North-south entry: route, authn/z, edge limit, protocol adapt, canary entry |
+| **BFF** | Per-client aggregation when mobile/web need different shapes/rhythms |
+| **Mesh** | East-west policy: mTLS, retries, outlier detection, traffic split |
 
-Requirements:
+Do not turn the gateway into a business god-object; put domain aggregation in BFF/app services.
 
-- versioning.
-- audit.
-- rollout.
-- rollback.
-- permission control.
-- client caching.
-- safe defaults.
+---
 
-Do not use dynamic config as a hidden deployment system without governance.
+## 6. Resilience Quartet
+
+Algorithm detail lives in doc 09. Here: **how to chain them**.
+
+1. **Timeout** — hard wait budget so threads/connections are not pinned forever.
+2. **Rate limit** — shed load at gateway / inbound / outbound.
+3. **Circuit break** — fail fast on a sick dependency; stop the cascade.
+4. **Retry** — last, only if idempotent, capped, with backoff.
+
+Plus **bulkheads** (separate pools/semaphores per dependency) and **dependency tiers** (strong vs weak/degradable).
+
+### 6.1 Circuit breaker mainline (not Hystrix)
+
+States still: Closed / Open / Half-Open.
+
+| Stack | Choice |
+|-------|--------|
+| Java | **Resilience4j** or **Spring Cloud CircuitBreaker** |
+| Traffic rules / console | Sentinel |
+| Multi-language platform | Envoy/Istio outlier detection |
+| Legacy | Hystrix — **historical only**, Netflix stopped maintaining it |
+
+Sentinel vs Resilience4j: dynamic rules / hotspot limiting / ops console → Sentinel; library-level breaker/retry/bulkhead in Spring → Resilience4j/SCCB. Isolation strategy ≠ breaker granularity — do not confuse the two in comparison tables.
 
 ---
 
 ## 7. Distributed Transactions
 
-Common patterns:
+Default engineering path: **local transaction + reliable messaging (Outbox) / Saga / TCC (funds)**. Prefer business-acceptable eventual consistency over XA/2PC.
 
-- Saga.
-- TCC.
-- local message table/outbox.
-- best-effort notification.
+**Why not 2PC as default:** blocking, coordinator risk, fights real-world timeouts and partitions.
 
-For many backend systems, outbox/event-driven consistency is more practical than strong distributed transactions.
+### 7.1 Outbox / Inbox (correct local message table)
 
-Design requirements:
+Producer does **not** wait for consumer ACK to mark “consumed.”
 
-- idempotent consumers.
-- retry.
-- DLQ.
-- reconciliation.
-- explicit state machine.
+```text
+[Producer Outbox]
+BEGIN
+  write business row
+  insert outbox(pending)
+COMMIT
+→ forwarder publishes to MQ → mark sent
 
----
+[Consumer Inbox]
+dedupe by unique key / inbox table
+→ apply business change (idempotent state machine)
+```
 
-## 8. Service Communication
+| Pattern | Idea |
+|---------|------|
+| Outbox | Same DB tx as business write; async publish |
+| Inbox | Consumer-side dedupe storage |
+| Saga | Committed steps + compensations; readers may see **business intermediate state** (not DB dirty read) |
+| TCC | Try / Confirm / Cancel — stronger reservation, higher intrusion |
+| Seata AT/TCC/… | Pick only when Outbox is not enough; XA last |
 
-### 8.1 Sync vs Async
-
-Synchronous RPC:
-
-- simple request-response model.
-- easier immediate result.
-- tighter coupling and failure propagation.
-
-Asynchronous messaging:
-
-- decoupling.
-- buffering.
-- eventual consistency.
-- harder debugging and ordering.
-
-### 8.2 gRPC vs REST
-
-| Dimension | REST | gRPC |
-|-----------|------|------|
-| Protocol | HTTP/JSON usually | HTTP/2 + Protobuf |
-| Human readability | high | lower |
-| Performance | good | usually better |
-| Streaming | limited | strong |
-| Browser support | native | needs gateway for many cases |
+**Idempotency triad:** unique key + dedupe store + re-entrant state machine.
 
 ---
 
-## 9. Rate Limiting
+## 8. Tracing and Observability
 
-Algorithms:
+W3C `traceparent`:
 
-- fixed window.
-- sliding window.
-- token bucket.
-- leaky bucket.
+```text
+00-<32-hex-trace-id>-<16-hex-parent-id>-<flags>
+```
 
-Rate limiting in microservices can be applied at:
+Propagate at each hop; export via **OTLP → OpenTelemetry Collector** → Jaeger/Tempo/…
+Jaeger Agent mode is legacy for new designs — standardize on Collector.
 
-- gateway.
-- service.
-- dependency client.
-- tenant quota layer.
+Metrics: latency / error / saturation per dependency; logs carry trace id; events carry business keys for replay.
 
 ---
 
-## 10. Microservice Testing
+## 9. Release Governance and Mesh
 
-Testing pyramid:
+Canary vs blue/green: small progressive risk → canary; instant cutover with spare capacity → blue/green.
+Traffic dyeing: propagate headers/metadata; orthogonal tags for canary vs stress tests; shadow DB/table/topic for load tests so production data is not polluted.
 
-- unit tests.
-- integration tests.
-- contract tests.
-- end-to-end tests.
-
-Contract testing prevents provider/consumer API drift without relying only on expensive E2E tests.
-
-Chaos engineering validates resilience by injecting controlled failures.
+Mesh is not automatically better than SDK: multi-language governance and platform maturity vs sidecar cost. Details in doc 11.
 
 ---
 
-## 11. Service Governance Practice
+## 10. Testing
 
-### 11.1 Canary Release
-
-Canary rollout gradually sends traffic to a new version.
-
-Watch:
-
-- error rate.
-- latency.
-- business metrics.
-- resource usage.
-- logs/traces.
-
-Rollback must be faster than rollout.
-
-### 11.2 Full-Link Load Testing
-
-Full-link load testing validates the whole production-like path.
-
-Must protect real users and data:
-
-- traffic isolation.
-- test data tagging.
-- capacity guardrails.
-- kill switch.
-
-### 11.3 Service Mesh
-
-Service mesh moves communication concerns into sidecars or data plane proxies.
-
-Capabilities:
-
-- traffic management.
-- mTLS.
-- retries/timeouts.
-- observability.
-- policy enforcement.
-
-Trade-off: operational complexity and proxy overhead.
+Unit → contract (Pact-style) → integration → e2e sparingly.
+Contract tests matter more once services only collaborate through APIs. Chaos: steady state → hypothesis → inject → verify breaker/degrade → fix → repeat.
 
 ---
 
-## 12. Interview Self-Check
+## 11. Interview Self-Check
 
-### Q1: When should you choose microservices?
+1. **Monolith vs microservices?** Deploy unit, data boundary, and team topology change—not just folders. *Follow-up:* What is a distributed monolith?
+2. **Why not shared DB?** Hidden schema/transaction coupling kills boundaries.
+3. **Registry vs K8s DNS?** DNS+readiness often enough in-cluster; registry/Mesh for heterogeneous or metadata routing.
+4. **Gateway duties without becoming a god?** Route/auth/limit/protocol/canary; aggregation → BFF.
+5. **Resilience order?** Timeout → limit → break → retry (+ bulkhead/tiers).
+6. **Modern breaker stack?** Resilience4j/SCCB or Sentinel/Mesh; Hystrix history only.
+7. **REST vs gRPC? REST = HTTP/1.1?** No. Style vs protocol; no fake “10×” claims.
+8. **`traceparent` + export path?** W3C hex format; OTLP → Collector.
+9. **Outbox flow?** pending→sent on producer; Inbox idempotency on consumer; no wait-for-consumer-ack on producer.
+10. **Saga dirty read?** Misnomer—business intermediate state, not uncommitted DB dirty read.
+11. **Why avoid 2PC?** Blocking/coordinator/partition reality; prefer Outbox.
+12. **Idempotency triad / distributed IDs?** Unique key + store + state machine; UUID vs segment vs Snowflake.
+13. **Graceful shutdown?** Drain traffic first, then stop.
+14. **Stress dyeing without polluting prod?** Orthogonal tags + shadow stores + sandbox third parties.
 
-**Answer:** When independent ownership, deployment, scaling, and failure isolation outweigh distributed complexity.
+### Design prompts
 
-### Q2: How do you split services?
+- **D1** Strangle a monolith: context → façade → service-before-DB → Outbox over blind 2PC.
+- **D2** Five sync hops under 100ms: parallelize, cut hops, cache, budget timeouts, degrade weak deps.
+- **D3** Order–inventory eventual consistency with Outbox/Inbox and reconciliation.
+- **D4** Still need a registry on Kubernetes? When DNS/readiness is enough vs when not.
+- **D5** Coexist canary tags and stress-test tags without metric pollution.
 
-**Answer:** Split by bounded context, business capability, data ownership, and team ownership, not by technical layers.
+---
 
-### Q3: What is service discovery?
+## Summary
 
-**Answer:** It lets clients or gateways find healthy service instances dynamically through registry, DNS, or service mesh.
-
-### Q4: What should an API gateway do?
-
-**Answer:** Routing, auth, rate limiting, protocol translation, observability, and traffic control. It should avoid deep business logic.
-
-### Q5: Why is distributed tracing important?
-
-**Answer:** It reveals latency and failures across service boundaries, which logs alone often cannot reconstruct.
-
-### Q6: How do you handle distributed transactions?
-
-**Answer:** Prefer local transactions plus reliable events/outbox when eventual consistency is acceptable. Use TCC or Saga for business workflows that require compensation.
-
-### Q7: How do you prevent cascading failure?
-
-**Answer:** Timeouts, retries with budgets, circuit breakers, rate limits, bulkheads, fallback, and backpressure.
-
-### Q8: What is contract testing?
-
-**Answer:** It verifies that service providers and consumers agree on API contracts, reducing integration failures.
-
-### Q9: What is canary release?
-
-**Answer:** A staged rollout that sends a small percentage of traffic to a new version and expands only if metrics remain healthy.
-
-### Q10: What is the trade-off of service mesh?
-
-**Answer:** It standardizes traffic governance and security, but adds operational complexity, latency overhead, and debugging layers.
-
-### Senior Interview Follow-Ups
-
-### Q11: How do you decide whether to split one service into two?
-
-**Answer:** Look for independent business ownership, different change cadence, separate scaling needs, clear data ownership, and failure isolation value. Do not split only because a codebase is large. If the split creates cross-service transactions, chatty RPC, duplicated models, or unclear ownership, a modular monolith may be better until boundaries stabilize.
-
-### Q12: What is your incident SOP for cascading failure in microservices?
-
-**Answer:** First identify the dependency causing saturation with traces, error budgets, queue length, and client retry metrics. Stop amplification by disabling aggressive retries, opening circuit breakers, shedding low-priority traffic, and rolling back the triggering deploy if correlated. Then protect core flows with degradation and bulkheads. After recovery, tune timeouts, retry budgets, concurrency limits, and dashboards so the same failure becomes visible earlier.
-
-### Q13: How do you keep service contracts from drifting?
-
-**Answer:** Use schema-first APIs where possible, consumer-driven contract tests, versioned protobuf/OpenAPI definitions, backward-compatible field changes, and CI checks that run against both provider and consumer expectations. Runtime observability should include unknown field usage, deprecated endpoint traffic, and error-code distribution. Governance should make breaking changes explicit instead of discovering them in E2E tests or production.
+1. **Boundary** first (DDD + data ownership); Strangler / ACL; split DB last.
+2. **Communication** with budgets; REST ≠ HTTP/1.1; ID schemes by ordering needs.
+3. **Platform triangle**: discovery (incl. vs K8s DNS) / config / gateway (vs BFF/Mesh).
+4. **Resilience quartet** with Resilience4j/SCCB as Java mainline; Hystrix historical.
+5. **Consistency**: Outbox/Inbox correctly split; Saga intermediate ≠ dirty read; idempotency triad.
+6. **Observe & release**: W3C `traceparent` + OTLP/Collector; dyeing; Mesh detail in 11, algorithms in 09.

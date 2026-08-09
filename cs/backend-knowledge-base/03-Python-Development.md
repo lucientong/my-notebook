@@ -895,7 +895,21 @@ Correctness should rely on database constraints, transactions, idempotency keys,
 
 ---
 
-## 12. Interview Self-Check
+## 12. Python Engineering Updates
+
+### Descriptor, Typing, and Attribute Lookup
+
+Descriptors implement `__get__`, `__set__`, or `__delete__`. Attribute lookup prioritizes data descriptors, then instance `__dict__`, then non-data descriptors/class attributes, then `__getattr__`. `property`, method binding, ORM fields, `staticmethod`, and `classmethod` all rely on this model. `Protocol` expresses structural typing; type hints mainly support static checking and framework contracts.
+
+### asyncio, Frameworks, Tests, and Dependencies
+
+`TaskGroup` gives structured concurrency and cancellation propagation. CPU-heavy work should go to a process pool or executor, not the event loop. WSGI is synchronous; ASGI supports async, WebSocket, and lifespan. FastAPI `async def` is not automatically faster if it calls blocking DB or HTTP clients. pytest fixtures manage resources, parametrize covers input matrices, and lockfiles make dependency resolution reproducible.
+
+### Correctness Notes
+
+`await` has historical roots in generator delegation, but modern `await` uses the `__await__` protocol; do not say it is simply `yield from`. CPython `list.append` is usually atomic as a single C operation under the GIL, but compound invariants like check-then-append still require locks or single-thread ownership. `SIGALRM` timeout decorators are Unix/main-thread specific and are not a general web-service timeout strategy.
+
+## 13. Interview Self-Check
 
 ### Quick Questions
 
@@ -1023,3 +1037,15 @@ Correctness should rely on database constraints, transactions, idempotency keys,
 - Use a durable queue such as Celery/RabbitMQ, Redis Streams, Kafka, or a workflow engine.
 - Add idempotency keys, retry budget, exponential backoff, DLQ, observability, and replay tooling.
 - Keep DB state transitions transactional and make consumers idempotent.
+
+
+### Additional Senior Questions
+
+### Q23: What is descriptor lookup order?
+Data descriptor, instance dictionary, non-data descriptor/class attribute, then `__getattr__`.
+
+### Q24: WSGI vs ASGI?
+WSGI is synchronous request/response. ASGI supports async, WebSocket, and application lifespan.
+
+### Q25: Is `list.append` thread-safe?
+Single append is usually atomic in CPython, but that is not a language guarantee and does not make compound operations thread-safe.

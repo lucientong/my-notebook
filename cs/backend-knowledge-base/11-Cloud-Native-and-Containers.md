@@ -93,7 +93,7 @@ Requests are used for scheduling. Limits are enforced at runtime.
 
 ### 2.3 Service Networking ⭐⭐⭐
 
-Service provides stable virtual IP and load balancing for pods.
+Service provides a stable virtual IP and load balancing for pods.
 
 Types:
 
@@ -102,7 +102,30 @@ Types:
 - LoadBalancer.
 - ExternalName.
 
-kube-proxy implements service routing through iptables, IPVS, or eBPF depending on environment.
+`kube-proxy` on every node watches Services and Endpoints/EndpointSlices, then programs the local datapath. The ClusterIP is usually not a process listening on a real NIC; packets are rewritten in the kernel and forwarded to a ready Pod.
+
+**iptables mode**
+
+- Uses Linux **Netfilter** rules configured via `iptables`.
+- Match ClusterIP:Port in long NAT chains (`KUBE-SERVICES` → `KUBE-SVC-*` → `KUBE-SEP-*`), then **DNAT** to a PodIP:Port.
+- Balancing is typically random probability via the `statistic` match.
+- Cost grows roughly with rule count: many Services make chain walks and rule sync expensive.
+
+**IPVS mode**
+
+- Uses Linux **IPVS** (IP Virtual Server), the kernel L4 load balancer from LVS, managed with `ipvsadm`.
+- Each Service becomes a Virtual Server (VIP:Port); each Endpoint is a Real Server.
+- Lookup is hash-based (~O(1)); schedulers include `rr`, `lc`, `sh`, etc.
+- Still may use some iptables for masquerade / helpers; needs `ip_vs*` kernel modules and often a dummy interface such as `kube-ipvs0`.
+
+| | iptables mode | IPVS mode |
+|--|---------------|-----------|
+| Kernel mechanism | Netfilter chains + DNAT | IPVS VS/RS scheduling |
+| Scale behavior | ~O(n) with rule count | ~O(1) VIP lookup |
+| Algorithms | mainly random | rr / lc / sh / ... |
+| Best fit | small/medium clusters | large Service counts |
+
+Newer clusters may also use `nftables` mode, or eBPF CNIs (e.g. Cilium) that replace kube-proxy entirely. See the Chinese note for a fuller walkthrough and commands.
 
 ### 2.4 Pod Network and CNI
 
@@ -355,3 +378,33 @@ Check:
 ### Q13: How do you design Kubernetes reliability across zones?
 
 **Answer:** Use multiple worker zones, topology spread constraints, pod anti-affinity, PodDisruptionBudgets, readiness gates, replicated dependencies, and zone-aware load balancing. etcd and control-plane HA need backups and tested restore. The trade-off is cost and operational complexity, so the design should be driven by RTO/RPO, traffic criticality, and dependency topology.
+
+
+## 8. Production Kubernetes Updates
+
+### CRI, OCI, containerd, and runc
+
+Modern Kubernetes does not rely on dockershim. kubelet talks to container runtimes through CRI; containerd or CRI-O manages images and containers; an OCI runtime such as runc creates the actual Linux container. Docker is still common for local builds, but production Kubernetes should be described as CRI + OCI. Prefer immutable image digests over mutable tags when supply-chain reproducibility matters.
+
+### Workloads and Pod Lifecycle
+
+Use Deployment for stateless services, StatefulSet for stable identity and PVC binding, DaemonSet for node agents, Job for one-off tasks, and CronJob for scheduled jobs. `startupProbe` protects slow startup, `readinessProbe` controls traffic admission, and `livenessProbe` should only restart a process that cannot recover. Graceful shutdown requires readiness removal, `preStop`, `terminationGracePeriodSeconds`, and connection draining.
+
+### Service, Ingress, Gateway API, and CNI
+
+Service provides stable L4 service discovery. Ingress expresses HTTP routing and TLS through an ingress controller. Gateway API splits responsibilities across GatewayClass, Gateway, and Route resources. CNI decides Pod IP allocation, cross-node routing, and whether NetworkPolicy is enforced. Flannel is simple, Calico is mature for policy/BGP, and Cilium uses eBPF for policy, observability, and datapath acceleration.
+
+### Security, Configuration, Autoscaling, and Operators
+
+RBAC answers who can call which Kubernetes API; ServiceAccount is the workload identity; Admission enforces policy before persistence. ConfigMap/Secret updates do not automatically restart Deployments; use checksum annotations or reloaders. HPA scales replicas, VPA adjusts requests, and KEDA connects scaling to event sources such as Kafka lag or queue length. Operators extend Kubernetes with CRDs plus a controller loop that continuously reconciles state.
+
+### Additional Senior Questions
+
+### Q26: Does Kubernetes still use Docker directly?
+No. kubelet uses CRI to call containerd or CRI-O, which then uses OCI runtimes such as runc. Docker remains useful for development and image building.
+
+### Q27: Ingress vs Gateway API?
+Ingress is a simpler HTTP routing resource. Gateway API is more expressive and separates infrastructure ownership from application routing through GatewayClass, Gateway, and Route objects.
+
+### Q28: Why can a ConfigMap change fail to affect running pods?
+Environment variables do not update after process start, mounted files may update but the app must reload them, and Deployments do not roll automatically unless you trigger them.
